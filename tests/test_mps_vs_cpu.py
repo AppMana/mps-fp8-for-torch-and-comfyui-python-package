@@ -113,8 +113,9 @@ class TestMatmulMpsVsCpu:
         from fp8_mps_metal.fp8_mps_native import fp8_quantize, fp8_scaled_mm
 
         M, K, N = 16, 32, 24
-        A = torch.randn(M, K, dtype=torch.float32)
-        B = torch.randn(N, K, dtype=torch.float32)
+        # Use uniform [0.1, 1] to avoid values that quantize to NaN byte 0x7F
+        A = torch.rand(M, K, dtype=torch.float32) * 0.9 + 0.1
+        B = torch.rand(N, K, dtype=torch.float32) * 0.9 + 0.1
 
         A_q_cpu, A_s_cpu = fp8_quantize(A)
         B_q_cpu, B_s_cpu = fp8_quantize(B)

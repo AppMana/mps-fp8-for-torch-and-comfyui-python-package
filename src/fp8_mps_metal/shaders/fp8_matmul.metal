@@ -131,8 +131,6 @@ kernel void fp8_scaled_matmul_kernel(
     uint row = gid.y;
     uint col = gid.x;
 
-    if (row >= M || col >= N) return;
-
     float sum = 0.0f;
 
     threadgroup float tile_a[TILE_SIZE][TILE_SIZE];
@@ -143,31 +141,24 @@ kernel void fp8_scaled_matmul_kernel(
     for (uint t = 0; t < num_tiles; t++) {
         uint k_base = t * TILE_SIZE;
 
-        // Load A tile — vectorized 4-byte load where possible
         uint a_k = k_base + lid.x;
-        if (row < M && a_k < K) {
-            tile_a[lid.y][lid.x] = fp8_e4m3fn_lut[A[row * K + a_k]];
-        } else {
-            tile_a[lid.y][lid.x] = 0.0f;
-        }
+        tile_a[lid.y][lid.x] = (row < M && a_k < K)
+            ? fp8_e4m3fn_lut[A[row * K + a_k]] : 0.0f;
 
-        // Load B tile
         uint b_k = k_base + lid.y;
-        if (col < N && b_k < K) {
-            tile_b[lid.y][lid.x] = fp8_e4m3fn_lut[B[col * K + b_k]];
-        } else {
-            tile_b[lid.y][lid.x] = 0.0f;
-        }
+        tile_b[lid.y][lid.x] = (col < N && b_k < K)
+            ? fp8_e4m3fn_lut[B[col * K + b_k]] : 0.0f;
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Accumulate tile product
         for (uint i = 0; i < TILE_SIZE; i++) {
             sum += tile_a[lid.y][i] * tile_b[i][lid.x];
         }
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
+
+    if (row >= M || col >= N) return;
 
     float sa = (scale_mode == 0) ? scale_a[0] : scale_a[row];
     float sb = (scale_mode == 0) ? scale_b[0] : scale_b[col];
