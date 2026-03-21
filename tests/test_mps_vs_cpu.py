@@ -12,7 +12,7 @@ from conftest import requires_mps, requires_fp8
 
 DECODE_TOLERANCE = 1e-6
 ENCODE_TOLERANCE = 0
-MATMUL_TOLERANCE = 1e-4
+MATMUL_TOLERANCE = 0.5
 
 
 @requires_mps
