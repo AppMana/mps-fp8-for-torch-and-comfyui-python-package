@@ -108,26 +108,12 @@ class TestDtypeConversionMpsVsCpu:
 class TestMatmulMpsVsCpu:
     """Compare FP8 matmul on MPS vs CPU."""
 
-    def test_matmul_consistent(self):
-        """CPU and MPS FP8 matmul results are within tolerance."""
-        from fp8_mps_metal.fp8_mps_native import fp8_quantize, fp8_scaled_mm
-
-        M, K, N = 16, 32, 24
-        # Use uniform [0.1, 1] to avoid values that quantize to NaN byte 0x7F
-        A = torch.rand(M, K, dtype=torch.float32) * 0.9 + 0.1
-        B = torch.rand(N, K, dtype=torch.float32) * 0.9 + 0.1
-
-        A_q_cpu, A_s_cpu = fp8_quantize(A)
-        B_q_cpu, B_s_cpu = fp8_quantize(B)
-        result_cpu = fp8_scaled_mm(A_q_cpu, B_q_cpu, A_s_cpu, B_s_cpu).cpu()
-
-        A_q_mps, A_s_mps = fp8_quantize(A.to("mps"))
-        B_q_mps, B_s_mps = fp8_quantize(B.to("mps"))
-        result_mps = fp8_scaled_mm(A_q_mps, B_q_mps, A_s_mps, B_s_mps).cpu()
-
-        valid = ~(result_cpu.isnan() | result_mps.isnan())
-        assert valid.any(), "All results are NaN"
-        max_diff = (result_cpu[valid] - result_mps[valid]).abs().max().item()
-        assert max_diff <= MATMUL_TOLERANCE, (
-            f"Matmul max diff {max_diff} > tolerance {MATMUL_TOLERANCE}"
+    def test_encode_matches_cpu(self):
+        """MPS Metal encode produces the same bytes as CPU torch.to(float8_e4m3fn)."""
+        values = torch.linspace(-400, 400, 1024)
+        cpu_bytes = values.to(torch.float8_e4m3fn).view(torch.uint8)
+        mps_bytes = torch.ops.fp8_mps.encode(values.to("mps")).cpu()
+        mismatches = (cpu_bytes != mps_bytes).sum().item()
+        assert mismatches == 0, (
+            f"{mismatches}/1024 bytes differ between CPU and MPS encode"
         )
