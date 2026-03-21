@@ -157,3 +157,65 @@ def fp8_scaled_mm_fast(A, B, scale_a, scale_b):
     B_f16 = B_f16 * sb
 
     return (A_f16 @ B_f16.T).float()
+
+
+def fp4_dequantize(input, scale):
+    lib = _get_lib()
+
+    if input.device.type != "mps":
+        input = input.to("mps")
+
+    num_bytes = input.numel()
+    output = torch.empty(num_bytes * 2, dtype=torch.float16, device="mps")
+
+    lib.fp4x2_to_half_kernel(
+        input.contiguous().view(-1), output,
+        num_bytes,
+        threads=(num_bytes,), group_size=(256,),
+    )
+
+    scale_val = scale.to(device="mps", dtype=torch.float16)
+    output = output * scale_val
+    return output
+
+
+def fp4_encode(input):
+    lib = _get_lib()
+
+    inp = input.to(device="mps", dtype=torch.float32).contiguous()
+    num_elements = inp.numel()
+    assert num_elements % 2 == 0, "FP4 x2 requires even number of elements"
+    num_bytes = num_elements // 2
+    output = torch.empty(num_bytes, dtype=torch.uint8, device="mps")
+
+    lib.float_to_fp4x2_kernel(
+        inp.view(-1), output,
+        num_bytes,
+        threads=(num_bytes,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp4_quantize(input):
+    lib = _get_lib()
+
+    inp = input.to(device="mps", dtype=torch.float32).contiguous()
+    num_elements = inp.numel()
+    assert num_elements % 2 == 0, "FP4 x2 requires even number of elements"
+
+    amax = inp.abs().max().item()
+    scale = 6.0 / amax if amax > 0 else 1.0
+
+    scaled = (inp * scale).contiguous()
+    num_bytes = num_elements // 2
+    output = torch.empty(num_bytes, dtype=torch.uint8, device="mps")
+
+    lib.float_to_fp4x2_kernel(
+        scaled.view(-1), output,
+        num_bytes,
+        threads=(num_bytes,), group_size=(256,),
+    )
+
+    inv_scale = torch.tensor([1.0 / scale], dtype=torch.float32, device="mps")
+    return output, inv_scale

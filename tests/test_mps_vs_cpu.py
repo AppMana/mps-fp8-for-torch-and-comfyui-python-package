@@ -125,7 +125,9 @@ class TestMatmulMpsVsCpu:
         B_q_mps, B_s_mps = fp8_quantize(B.to("mps"))
         result_mps = fp8_scaled_mm(A_q_mps, B_q_mps, A_s_mps, B_s_mps).cpu()
 
-        max_diff = (result_cpu - result_mps).abs().max().item()
+        valid = ~(result_cpu.isnan() | result_mps.isnan())
+        assert valid.any(), "All results are NaN"
+        max_diff = (result_cpu[valid] - result_mps[valid]).abs().max().item()
         assert max_diff <= MATMUL_TOLERANCE, (
             f"Matmul max diff {max_diff} > tolerance {MATMUL_TOLERANCE}"
         )

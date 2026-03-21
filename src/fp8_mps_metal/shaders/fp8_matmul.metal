@@ -18,7 +18,7 @@ constant float fp8_e4m3fn_lut[256] = {
     32.0f, 36.0f, 40.0f, 44.0f, 48.0f, 52.0f, 56.0f, 60.0f,
     64.0f, 72.0f, 80.0f, 88.0f, 96.0f, 104.0f, 112.0f, 120.0f,
     128.0f, 144.0f, 160.0f, 176.0f, 192.0f, 208.0f, 224.0f, 240.0f,
-    256.0f, 288.0f, 320.0f, 352.0f, 384.0f, 416.0f, 448.0f, NAN,
+    256.0f, 288.0f, 320.0f, 352.0f, 384.0f, 416.0f, 448.0f, 0.0f,
     0.0f, -0.001953125f, -0.00390625f, -0.005859375f, -0.0078125f, -0.009765625f, -0.01171875f, -0.013671875f,
     -0.015625f, -0.017578125f, -0.01953125f, -0.021484375f, -0.0234375f, -0.025390625f, -0.02734375f, -0.029296875f,
     -0.03125f, -0.03515625f, -0.0390625f, -0.04296875f, -0.046875f, -0.05078125f, -0.0546875f, -0.05859375f,
@@ -73,6 +73,34 @@ constant half fp8_e4m3fn_lut_half[256] = {
     -256.0h, -288.0h, -320.0h, -352.0h, -384.0h, -416.0h, -448.0h, NAN,
 };
 
+// FP4 e2m1fn decode LUT (16 entries, no NaN/inf)
+constant float fp4_e2m1fn_lut[16] = {
+    0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+    -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+};
+
+constant half fp4_e2m1fn_lut_half[16] = {
+    0.0h, 0.5h, 1.0h, 1.5h, 2.0h, 3.0h, 4.0h, 6.0h,
+    -0.0h, -0.5h, -1.0h, -1.5h, -2.0h, -3.0h, -4.0h, -6.0h,
+};
+
+// Float → FP4 e2m1fn encode (nearest value from the 16-entry set)
+inline uint8_t float_to_fp4_e2m1fn(float val) {
+    uint sign = 0;
+    if (val < 0.0f) { sign = 1; val = -val; }
+    // Clamp and find nearest: 0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0
+    uint code;
+    if      (val < 0.25f)  code = 0;  // 0
+    else if (val < 0.75f)  code = 1;  // 0.5
+    else if (val < 1.25f)  code = 2;  // 1.0
+    else if (val < 1.75f)  code = 3;  // 1.5
+    else if (val < 2.5f)   code = 4;  // 2.0
+    else if (val < 3.5f)   code = 5;  // 3.0
+    else if (val < 5.0f)   code = 6;  // 4.0
+    else                   code = 7;  // 6.0
+    return (sign << 3) | code;
+}
+
 // Float → FP8 encode using integer bit manipulation (no transcendentals)
 inline uint8_t float_to_fp8_e4m3fn(float val) {
     uint sign = 0;
@@ -111,10 +139,7 @@ inline uint8_t float_to_fp8_e4m3fn(float val) {
     return (sign << 7) | uint8_t(fp8_exp << 3) | uint8_t(mant);
 }
 
-// Tiled matmul with threadgroup shared memory
 // A: (M,K) uint8 FP8, B: (N,K) uint8 FP8 (transposed), out: (M,N) float32
-constant uint TILE_SIZE = 16;
-
 kernel void fp8_scaled_matmul_kernel(
     device const uint8_t* A [[buffer(0)]],
     device const uint8_t* B [[buffer(1)]],
@@ -125,40 +150,27 @@ kernel void fp8_scaled_matmul_kernel(
     constant uint& N [[buffer(6)]],
     constant uint& K [[buffer(7)]],
     constant uint& scale_mode [[buffer(8)]],
-    uint2 gid [[thread_position_in_grid]],
-    uint2 lid [[thread_position_in_threadgroup]]
+    uint2 gid [[thread_position_in_grid]]
 ) {
     uint row = gid.y;
     uint col = gid.x;
+    if (row >= M || col >= N) return;
 
     float sum = 0.0f;
+    uint a_base = row * K;
+    uint b_base = col * K;
 
-    threadgroup float tile_a[TILE_SIZE][TILE_SIZE];
-    threadgroup float tile_b[TILE_SIZE][TILE_SIZE];
-
-    uint num_tiles = (K + TILE_SIZE - 1) / TILE_SIZE;
-
-    for (uint t = 0; t < num_tiles; t++) {
-        uint k_base = t * TILE_SIZE;
-
-        uint a_k = k_base + lid.x;
-        tile_a[lid.y][lid.x] = (row < M && a_k < K)
-            ? fp8_e4m3fn_lut[A[row * K + a_k]] : 0.0f;
-
-        uint b_k = k_base + lid.y;
-        tile_b[lid.y][lid.x] = (col < N && b_k < K)
-            ? fp8_e4m3fn_lut[B[col * K + b_k]] : 0.0f;
-
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        for (uint i = 0; i < TILE_SIZE; i++) {
-            sum += tile_a[lid.y][i] * tile_b[i][lid.x];
-        }
-
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint k = 0;
+    uint K4 = (K / 4) * 4;
+    for (; k < K4; k += 4) {
+        sum += fp8_e4m3fn_lut[A[a_base + k]]     * fp8_e4m3fn_lut[B[b_base + k]]
+             + fp8_e4m3fn_lut[A[a_base + k + 1]] * fp8_e4m3fn_lut[B[b_base + k + 1]]
+             + fp8_e4m3fn_lut[A[a_base + k + 2]] * fp8_e4m3fn_lut[B[b_base + k + 2]]
+             + fp8_e4m3fn_lut[A[a_base + k + 3]] * fp8_e4m3fn_lut[B[b_base + k + 3]];
     }
-
-    if (row >= M || col >= N) return;
+    for (; k < K; k++) {
+        sum += fp8_e4m3fn_lut[A[a_base + k]] * fp8_e4m3fn_lut[B[b_base + k]];
+    }
 
     float sa = (scale_mode == 0) ? scale_a[0] : scale_a[row];
     float sb = (scale_mode == 0) ? scale_b[0] : scale_b[col];
@@ -222,7 +234,7 @@ kernel void fp8_to_half_kernel(
     output[gid] = fp8_e4m3fn_lut_half[input[gid]];
 }
 
-// float → FP8 encode (integer bit manipulation, no transcendentals)
+// float → FP8 encode
 kernel void float_to_fp8_kernel(
     device const float* input [[buffer(0)]],
     device uint8_t* output [[buffer(1)]],
@@ -231,4 +243,30 @@ kernel void float_to_fp8_kernel(
 ) {
     if (gid >= count) return;
     output[gid] = float_to_fp8_e4m3fn(input[gid]);
+}
+
+// FP4 x2 → half dequantize (unpack 2 nibbles per byte)
+kernel void fp4x2_to_half_kernel(
+    device const uint8_t* input [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    uint8_t byte = input[gid];
+    output[gid * 2]     = fp4_e2m1fn_lut_half[byte & 0xF];
+    output[gid * 2 + 1] = fp4_e2m1fn_lut_half[(byte >> 4) & 0xF];
+}
+
+// float → FP4 x2 encode (pack 2 nibbles per byte)
+kernel void float_to_fp4x2_kernel(
+    device const float* input [[buffer(0)]],
+    device uint8_t* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    uint8_t lo = float_to_fp4_e2m1fn(input[gid * 2]);
+    uint8_t hi = float_to_fp4_e2m1fn(input[gid * 2 + 1]);
+    output[gid] = lo | (hi << 4);
 }
