@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fp8-mps-metal"
+version = "1.0.0"
+description = "FP8 (Float8_e4m3fn) support for Apple Silicon MPS backend"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.9"]
+
+[project.urls]
+Repository = "https://github.com/AppMana/mps-fp8-for-torch-and-comfyui-python-package"
+
+[project.entry-points."torch.backends"]
+fp8_mps_metal = "fp8_mps_metal._autoload:_autoload"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fp8_mps_metal"]
+
+[tool.comfy]
+PublisherId = "audiohacking"
+DisplayName = "fp8-mps-metal"
+Icon = "https://avatars.githubusercontent.com/u/248655186?s=400&u=c76a1b563147e1765aa43ec50daa33d3397ad222&v=4"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

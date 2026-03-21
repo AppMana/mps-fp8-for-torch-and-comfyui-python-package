@@ -1,0 +1,12 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - run: uv run pytest
