@@ -11,15 +11,105 @@ requires_fp4 = pytest.mark.skipif(
 )
 
 
+FP4_SPEC = {
+    # nibble: expected float value (e2m1fn, bias=1)
+    0b0000: 0.0, 0b0001: 0.5, 0b0010: 1.0, 0b0011: 1.5,
+    0b0100: 2.0, 0b0101: 3.0, 0b0110: 4.0, 0b0111: 6.0,
+    0b1000: -0.0, 0b1001: -0.5, 0b1010: -1.0, 0b1011: -1.5,
+    0b1100: -2.0, 0b1101: -3.0, 0b1110: -4.0, 0b1111: -6.0,
+}
+
+
+@requires_mps
+@requires_fp4
+class TestFp4DecodeExhaustive:
+
+    def test_all_16_values(self):
+        """Decode all 16 FP4 nibble values and verify against spec."""
+        scale = torch.tensor([1.0], device="mps")
+        for nibble, expected in FP4_SPEC.items():
+            # Pack same nibble in both halves of the byte
+            byte_val = nibble | (nibble << 4)
+            encoded = torch.tensor([byte_val], dtype=torch.uint8, device="mps")
+            decoded = torch.ops.fp8_mps.fp4_dequantize(encoded, scale).cpu().float()
+            lo, hi = decoded[0].item(), decoded[1].item()
+            assert lo == expected, f"nibble 0b{nibble:04b} lo: expected {expected}, got {lo}"
+            assert hi == expected, f"nibble 0b{nibble:04b} hi: expected {expected}, got {hi}"
+
+    def test_all_256_byte_patterns(self):
+        """Decode all 256 packed byte patterns and verify both nibbles."""
+        all_bytes = torch.arange(256, dtype=torch.uint8, device="mps")
+        scale = torch.tensor([1.0], device="mps")
+        decoded = torch.ops.fp8_mps.fp4_dequantize(all_bytes, scale).cpu().float()
+        for byte_val in range(256):
+            lo_nibble = byte_val & 0xF
+            hi_nibble = (byte_val >> 4) & 0xF
+            lo_expected = FP4_SPEC[lo_nibble]
+            hi_expected = FP4_SPEC[hi_nibble]
+            lo_actual = decoded[byte_val * 2].item()
+            hi_actual = decoded[byte_val * 2 + 1].item()
+            assert lo_actual == lo_expected, (
+                f"byte 0x{byte_val:02X} lo: expected {lo_expected}, got {lo_actual}"
+            )
+            assert hi_actual == hi_expected, (
+                f"byte 0x{byte_val:02X} hi: expected {hi_expected}, got {hi_actual}"
+            )
+
+
+@requires_mps
+@requires_fp4
+class TestFp4EncodeExhaustive:
+
+    def test_exact_values_encode_correctly(self):
+        """Encoding each exact FP4 value produces the correct nibble."""
+        pos_values = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+        pos_nibbles = [0, 1, 2, 3, 4, 5, 6, 7]
+        # Test positive and negative, packing pairs
+        for val, nibble in zip(pos_values, pos_nibbles):
+            for sign in [1.0, -1.0]:
+                v = val * sign
+                expected_nibble = nibble | (0b1000 if sign < 0 and val != 0.0 else 0)
+                # Encode pair: [v, 0.0]
+                x = torch.tensor([v, 0.0], device="mps", dtype=torch.float32)
+                encoded = torch.ops.fp8_mps.fp4_encode(x).cpu()
+                lo_nibble = encoded[0].item() & 0xF
+                assert lo_nibble == expected_nibble, (
+                    f"val={v}: expected nibble 0b{expected_nibble:04b}, got 0b{lo_nibble:04b}"
+                )
+
+    def test_midpoints_round_correctly(self):
+        """Midpoints between adjacent FP4 values round to nearest."""
+        pos_values = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+        scale = torch.tensor([1.0], device="mps")
+        for i in range(len(pos_values) - 1):
+            mid = (pos_values[i] + pos_values[i + 1]) / 2
+            # Encode and decode: should land on one of the two neighbors
+            x = torch.tensor([mid, 0.0], device="mps", dtype=torch.float32)
+            encoded = torch.ops.fp8_mps.fp4_encode(x)
+            decoded = torch.ops.fp8_mps.fp4_dequantize(encoded, scale).cpu().float()
+            result = decoded[0].item()
+            assert result in (pos_values[i], pos_values[i + 1]), (
+                f"midpoint {mid}: decoded to {result}, expected {pos_values[i]} or {pos_values[i+1]}"
+            )
+
+    def test_clamp_to_range(self):
+        """Values outside [-6, 6] clamp to the extremes."""
+        x = torch.tensor([100.0, -100.0, 1000.0, -1000.0, 0.001, -0.001, 0.0, 0.0],
+                         device="mps", dtype=torch.float32)
+        scale = torch.tensor([1.0], device="mps")
+        encoded = torch.ops.fp8_mps.fp4_encode(x)
+        decoded = torch.ops.fp8_mps.fp4_dequantize(encoded, scale).cpu().float()
+        assert decoded[0].item() == 6.0
+        assert decoded[1].item() == -6.0
+        assert decoded[2].item() == 6.0
+        assert decoded[3].item() == -6.0
+        assert decoded[4].item() == 0.0
+        assert decoded[5].item() == 0.0
+
+
 @requires_mps
 @requires_fp4
 class TestFp4Encode:
-
-    def test_encode_known_values(self):
-        x = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device="mps")
-        encoded = torch.ops.fp8_mps.fp4_encode(x)
-        assert encoded.dtype == torch.uint8
-        assert encoded.shape == (4,)
 
     def test_encode_roundtrip(self):
         x = torch.tensor([0.0, 1.0, -1.0, 3.0, -6.0, 0.5, -0.5, 4.0], device="mps")
@@ -27,13 +117,6 @@ class TestFp4Encode:
         decoded = torch.ops.fp8_mps.fp4_dequantize(encoded, torch.tensor([1.0], device="mps"))
         for orig, dec in zip(x.cpu(), decoded.cpu().float()):
             assert abs(dec - orig) < 0.5, f"orig={orig.item()}, decoded={dec.item()}"
-
-    def test_encode_clamps_to_range(self):
-        x = torch.tensor([100.0, -100.0, 0.001, -0.001, 0.0, 0.0, 0.0, 0.0], device="mps")
-        encoded = torch.ops.fp8_mps.fp4_encode(x)
-        decoded = torch.ops.fp8_mps.fp4_dequantize(encoded, torch.tensor([1.0], device="mps"))
-        assert decoded[0].item() == 6.0
-        assert decoded[1].item() == -6.0
 
 
 @requires_mps
