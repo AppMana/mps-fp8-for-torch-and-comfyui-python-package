@@ -9,6 +9,8 @@ description = "FP8 and FP4 sub-byte dtype support for PyTorch MPS on Apple Silic
 license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = ["torch>=2.9"]
+authors = [{ name = "doctorpangloss", email = "2229300+doctorpangloss@users.noreply.github.com" }]
+readme = "README.md"
 
 [project.urls]
 Repository = "https://github.com/AppMana/mps-fp8-for-torch-and-comfyui-python-package"
