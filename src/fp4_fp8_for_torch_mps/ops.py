@@ -31,7 +31,7 @@ def _is_sub_byte(dtype):
 
 
 def _metal_scaled_mm(self, mat2, scale_a, scale_b, bias=None, scale_result=None, out_dtype=None, use_fast_accum=False):
-    from fp8_mps_metal.fp8_mps_native import fp8_scaled_mm_auto
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_scaled_mm_auto
 
     a = self.view(torch.uint8) if self.dtype != torch.uint8 else self
     b = mat2.view(torch.uint8) if mat2.dtype != torch.uint8 else mat2
@@ -171,7 +171,7 @@ _aten_lib.impl("copy_", _metal_copy_, "MPS", with_keyset=True, allow_override=Tr
 
 @torch.library.custom_op("fp8_mps::scaled_mm", mutates_args=())
 def fp8_scaled_mm(A: torch.Tensor, B: torch.Tensor, scale_a: torch.Tensor, scale_b: torch.Tensor) -> torch.Tensor:
-    from fp8_mps_metal.fp8_mps_native import fp8_scaled_mm_auto
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_scaled_mm_auto
     return fp8_scaled_mm_auto(A, B, scale_a, scale_b)
 
 
@@ -182,7 +182,7 @@ def _(A, B, scale_a, scale_b):
 
 @torch.library.custom_op("fp8_mps::encode", mutates_args=())
 def fp8_encode(input: torch.Tensor) -> torch.Tensor:
-    from fp8_mps_metal.fp8_mps_native import fp8_encode as _encode
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_encode as _encode
     return _encode(input)
 
 
@@ -193,7 +193,7 @@ def _(input):
 
 @torch.library.custom_op("fp8_mps::quantize", mutates_args=())
 def fp8_quantize(input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    from fp8_mps_metal.fp8_mps_native import fp8_quantize as _quantize
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_quantize as _quantize
     return _quantize(input)
 
 
@@ -204,7 +204,7 @@ def _(input):
 
 @torch.library.custom_op("fp8_mps::dequantize", mutates_args=())
 def fp8_dequantize(input: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    from fp8_mps_metal.fp8_mps_native import fp8_dequantize as _dequantize
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_dequantize as _dequantize
     return _dequantize(input, scale)
 
 
@@ -215,7 +215,7 @@ def _(input, scale):
 
 @torch.library.custom_op("fp8_mps::fp4_encode", mutates_args=())
 def fp4_encode(input: torch.Tensor) -> torch.Tensor:
-    from fp8_mps_metal.fp8_mps_native import fp4_encode as _encode
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp4_encode as _encode
     return _encode(input)
 
 
@@ -226,7 +226,7 @@ def _(input):
 
 @torch.library.custom_op("fp8_mps::fp4_quantize", mutates_args=())
 def fp4_quantize(input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    from fp8_mps_metal.fp8_mps_native import fp4_quantize as _quantize
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp4_quantize as _quantize
     return _quantize(input)
 
 
@@ -237,7 +237,7 @@ def _(input):
 
 @torch.library.custom_op("fp8_mps::fp4_dequantize", mutates_args=())
 def fp4_dequantize(input: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    from fp8_mps_metal.fp8_mps_native import fp4_dequantize as _dequantize
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp4_dequantize as _dequantize
     return _dequantize(input, scale)
 
 

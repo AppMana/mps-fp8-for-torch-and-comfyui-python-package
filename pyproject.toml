@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "fp8-mps-metal"
+name = "fp4-fp8-for-torch-mps"
 version = "1.0.0"
 description = "FP8 (Float8_e4m3fn) support for Apple Silicon MPS backend"
 license = "Apache-2.0"
@@ -14,10 +14,10 @@ dependencies = ["torch>=2.9"]
 Repository = "https://github.com/AppMana/mps-fp8-for-torch-and-comfyui-python-package"
 
 [project.entry-points."torch.backends"]
-fp8_mps_metal = "fp8_mps_metal._autoload:_autoload"
+fp4_fp8_for_torch_mps = "fp4_fp8_for_torch_mps._autoload:_autoload"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fp8_mps_metal"]
+packages = ["src/fp4_fp8_for_torch_mps"]
 
 [dependency-groups]
 dev = [

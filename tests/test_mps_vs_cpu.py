@@ -21,7 +21,7 @@ class TestEncodeMpsVsCpu:
 
     def test_encoding_identical(self):
         """MPS and CPU encoding produce identical byte results."""
-        from fp8_mps_metal.fp8_mps_native import fp8_quantize
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_quantize
 
         test_values = [
             0.0, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 3.0, 10.0, 50.0,
@@ -45,7 +45,7 @@ class TestDecodeMpsVsCpu:
 
     def test_all_256_values_identical(self):
         """MPS and CPU decoding of all 256 byte values are identical."""
-        from fp8_mps_metal.fp8_mps_native import fp8_dequantize
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_dequantize
 
         all_bytes = torch.arange(256, dtype=torch.uint8)
         scale = torch.tensor([1.0], dtype=torch.float32)
@@ -68,7 +68,7 @@ class TestRoundtripMpsVsCpu:
 
     def test_roundtrip_identical(self):
         """CPU and MPS roundtrip decoded values are identical."""
-        from fp8_mps_metal.fp8_mps_native import fp8_quantize, fp8_dequantize
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_quantize, fp8_dequantize
 
         test_values = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0, 100.0, 200.0]
         t_cpu = torch.tensor(test_values, dtype=torch.float32)

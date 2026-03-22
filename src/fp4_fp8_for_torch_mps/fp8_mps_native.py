@@ -10,7 +10,7 @@ def _load_shader_source():
     global _SHADER_SOURCE
     if _SHADER_SOURCE is not None:
         return _SHADER_SOURCE
-    ref = importlib.resources.files("fp8_mps_metal.shaders").joinpath("fp8_matmul.metal")
+    ref = importlib.resources.files("fp4_fp8_for_torch_mps.shaders").joinpath("fp8_matmul.metal")
     _SHADER_SOURCE = ref.read_text(encoding="utf-8")
     return _SHADER_SOURCE
 

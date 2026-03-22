@@ -29,7 +29,7 @@ class TestExhaustiveFp8Decode:
 
     def test_all_256_patterns(self):
         """Native decode of every uint8 matches the Python reference."""
-        from fp8_mps_metal import fp8_mps_native
+        from fp4_fp8_for_torch_mps import fp8_mps_native
 
         all_bits = torch.arange(256, dtype=torch.uint8)
         scale = torch.tensor([1.0])
@@ -51,7 +51,7 @@ class TestMatmulAccuracyNative:
 
     def test_fused_kernel(self):
         """Fused kernel relative RMSE stays below 15%."""
-        from fp8_mps_metal import fp8_mps_native
+        from fp4_fp8_for_torch_mps import fp8_mps_native
 
         M, K, N = 64, 256, 128
         A_f32 = torch.randn(M, K)
@@ -67,7 +67,7 @@ class TestMatmulAccuracyNative:
 
     def test_fast_path(self):
         """Fast (dequant + native matmul) relative RMSE stays below 15%."""
-        from fp8_mps_metal import fp8_mps_native
+        from fp4_fp8_for_torch_mps import fp8_mps_native
 
         M, K, N = 64, 256, 128
         A_f32 = torch.randn(M, K)
@@ -83,7 +83,7 @@ class TestMatmulAccuracyNative:
 
     def test_auto_selector_shape(self):
         """Auto selector produces correct output shape."""
-        from fp8_mps_metal import fp8_mps_native
+        from fp4_fp8_for_torch_mps import fp8_mps_native
 
         M, K, N = 64, 256, 128
         A_q, A_scale = fp8_mps_native.fp8_quantize(torch.randn(M, K))
@@ -97,7 +97,7 @@ class TestQuantizeRoundtrip:
 
     def test_roundtrip_max_error(self):
         """Roundtrip error is bounded."""
-        from fp8_mps_metal import fp8_mps_native
+        from fp4_fp8_for_torch_mps import fp8_mps_native
 
         x = torch.tensor([0.0, 1.0, -1.0, 0.5, -0.5, 100.0, -100.0, 448.0])
         q, scale = fp8_mps_native.fp8_quantize(x)
@@ -111,7 +111,7 @@ class TestVecmat:
 
     def test_vecmat_accuracy(self):
         """Vecmat relative RMSE stays below 15%."""
-        from fp8_mps_metal import fp8_mps_native
+        from fp4_fp8_for_torch_mps import fp8_mps_native
 
         K, N = 512, 256
         x = torch.randn(1, K)
@@ -175,7 +175,7 @@ class TestFp8Conversion:
 
     def test_fp8_encoding_valid_uint8(self):
         """Encoded FP8 values are valid uint8."""
-        from fp8_mps_metal.fp8_mps_native import fp8_dequantize
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_dequantize
 
         x = torch.tensor([0.0, 1.0, -1.0, 0.5, -0.5, 100.0, -100.0, 448.0], device="mps")
         x_fp8 = x.to(torch.float8_e4m3fn)
@@ -193,7 +193,7 @@ class TestFp8Conversion:
 
     def test_fp8_in_matmul_pipeline(self):
         """Converted FP8 tensors can be used in scaled matmul."""
-        from fp8_mps_metal.fp8_mps_native import fp8_scaled_mm_auto
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_scaled_mm_auto
 
         A = torch.randn(16, 32, device="mps").to(torch.float8_e4m3fn).view(torch.uint8)
         B = torch.randn(32, 32, device="mps").to(torch.float8_e4m3fn).view(torch.uint8)

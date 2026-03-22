@@ -1,6 +1,6 @@
 """Integration tests using only standard PyTorch APIs.
 
-These tests do NOT import fp8_mps_metal — the torch.backends entry point
+These tests do NOT import fp4_fp8_for_torch_mps — the torch.backends entry point
 auto-loads the extension when torch is imported. They verify that FP8
 dtypes work on MPS identically to CPU, and that FP8 matmul compares
 favorably to FP16.

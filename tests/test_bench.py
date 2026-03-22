@@ -14,17 +14,17 @@ class TestBenchDequantize:
         return torch.randint(0, 255, (1024, 1024), dtype=torch.uint8, device="mps")
 
     def test_dequantize(self, benchmark, data_1m):
-        from fp8_mps_metal.fp8_mps_native import fp8_dequantize
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_dequantize
         scale = torch.tensor([1.0], device="mps")
         benchmark(fp8_dequantize, data_1m, scale)
 
     def test_encode(self, benchmark):
-        from fp8_mps_metal.fp8_mps_native import fp8_encode
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_encode
         x = torch.randn(1024, 1024, device="mps")
         benchmark(fp8_encode, x)
 
     def test_quantize(self, benchmark):
-        from fp8_mps_metal.fp8_mps_native import fp8_quantize
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_quantize
         x = torch.randn(1024, 1024, device="mps")
         benchmark(fp8_quantize, x)
 
@@ -33,7 +33,7 @@ class TestBenchDequantize:
 class TestBenchMatmul:
 
     def test_scaled_mm_64x256x128(self, benchmark):
-        from fp8_mps_metal.fp8_mps_native import fp8_quantize, fp8_scaled_mm
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_quantize, fp8_scaled_mm
         A_q, A_s = fp8_quantize(torch.randn(64, 256))
         B_q, B_s = fp8_quantize(torch.randn(128, 256))
 
@@ -44,7 +44,7 @@ class TestBenchMatmul:
         benchmark(run)
 
     def test_scaled_mm_auto_64x256x128(self, benchmark):
-        from fp8_mps_metal.fp8_mps_native import fp8_quantize, fp8_scaled_mm_auto
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_quantize, fp8_scaled_mm_auto
         A_q, A_s = fp8_quantize(torch.randn(64, 256))
         B_q, B_s = fp8_quantize(torch.randn(128, 256))
 
@@ -55,7 +55,7 @@ class TestBenchMatmul:
         benchmark(run)
 
     def test_vecmat_1x512x256(self, benchmark):
-        from fp8_mps_metal.fp8_mps_native import fp8_quantize, fp8_scaled_mm
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_quantize, fp8_scaled_mm
         x_q, x_s = fp8_quantize(torch.randn(1, 512))
         W_q, W_s = fp8_quantize(torch.randn(256, 512))
 
@@ -66,7 +66,7 @@ class TestBenchMatmul:
         benchmark(run)
 
     def test_fast_path_64x256x128(self, benchmark):
-        from fp8_mps_metal.fp8_mps_native import fp8_quantize, fp8_scaled_mm_fast
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_quantize, fp8_scaled_mm_fast
         A_q, A_s = fp8_quantize(torch.randn(64, 256))
         B_q, B_s = fp8_quantize(torch.randn(128, 256))
 
