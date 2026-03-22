@@ -90,7 +90,7 @@ class TestBenchMatmul:
 
 @requires_mps
 class TestBenchAttentionBlock:
-    """Benchmark the realistic path: FP8 weight projections → FP16 SDPA."""
+    """Benchmark the realistic path: FP8 weight projections -> FP16 SDPA."""
 
     def test_fp8_weights_projection_then_sdpa(self, benchmark):
         """FP8 linear projections (Q/K/V) via _scaled_mm, then native FP16 SDPA."""

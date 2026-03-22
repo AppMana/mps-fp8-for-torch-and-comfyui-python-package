@@ -58,7 +58,7 @@ def _metal_to_copy(keyset, self, *, dtype=None, layout=None, device=None, pin_me
     source_is_fp4 = _is_fp4(self.dtype)
     target_is_fp4 = _is_fp4(target_dtype)
 
-    # Sub-byte source → MPS device transfer (raw bytes)
+    # Sub-byte source -> MPS device transfer (raw bytes)
     if source_sub_byte and target_is_mps and self.device.type != "mps":
         ks = keyset.remove(torch._C.DispatchKey.MPS)
         u8_mps = torch.ops.aten._to_copy.default.redispatch(
@@ -71,7 +71,7 @@ def _metal_to_copy(keyset, self, *, dtype=None, layout=None, device=None, pin_me
             result = result.view(torch.uint8).view(target_dtype)
         return result
 
-    # Float → FP4 on MPS (encode)
+    # Float -> FP4 on MPS (encode)
     if target_is_mps and target_is_fp4 and not source_sub_byte:
         if self.device.type != "mps":
             ks = keyset.remove(torch._C.DispatchKey.MPS)
@@ -83,7 +83,7 @@ def _metal_to_copy(keyset, self, *, dtype=None, layout=None, device=None, pin_me
             on_mps = self
         return torch.ops.fp8_mps.fp4_encode(on_mps).view(target_dtype)
 
-    # Float → FP8 on MPS (encode)
+    # Float -> FP8 on MPS (encode)
     if target_is_mps and _is_fp8(target_dtype) and not source_sub_byte:
         if self.device.type != "mps":
             ks = keyset.remove(torch._C.DispatchKey.MPS)
@@ -95,13 +95,13 @@ def _metal_to_copy(keyset, self, *, dtype=None, layout=None, device=None, pin_me
             on_mps = self
         return torch.ops.fp8_mps.encode(on_mps).view(target_dtype)
 
-    # Sub-byte on MPS → same type
+    # Sub-byte on MPS -> same type
     if source_sub_byte and self.device.type == "mps" and target_sub_byte:
         if target_dtype == self.dtype:
             return self.clone()
         return self.view(torch.uint8).view(target_dtype)
 
-    # FP4 on MPS → non-sub-byte (dequantize)
+    # FP4 on MPS -> non-sub-byte (dequantize)
     if source_is_fp4 and self.device.type == "mps" and not target_sub_byte:
         dequantized = torch.ops.fp8_mps.fp4_dequantize(
             self.view(torch.uint8), torch.tensor([1.0], device="mps"),
@@ -110,7 +110,7 @@ def _metal_to_copy(keyset, self, *, dtype=None, layout=None, device=None, pin_me
             dequantized = dequantized.to(target_dtype)
         return dequantized
 
-    # FP8 on MPS → non-sub-byte (dequantize)
+    # FP8 on MPS -> non-sub-byte (dequantize)
     if _is_fp8(self.dtype) and self.device.type == "mps" and not target_sub_byte:
         dequantized = torch.ops.fp8_mps.dequantize(
             self.view(torch.uint8), torch.tensor([1.0], device="mps"),
@@ -134,7 +134,7 @@ def _metal_copy_(keyset, self, src, non_blocking=False):
     dest_sub = _is_sub_byte(self.dtype)
     dest_is_mps = self.device.type == "mps"
 
-    # Sub-byte → sub-byte on MPS (raw bytes)
+    # Sub-byte -> sub-byte on MPS (raw bytes)
     if source_sub and dest_sub and dest_is_mps:
         ks = keyset.remove(torch._C.DispatchKey.MPS)
         torch.ops.aten.copy_.default.redispatch(
@@ -142,7 +142,7 @@ def _metal_copy_(keyset, self, src, non_blocking=False):
         )
         return self
 
-    # Float → FP4 on MPS (encode)
+    # Float -> FP4 on MPS (encode)
     if not source_sub and _is_fp4(self.dtype) and dest_is_mps:
         src_mps = src.to(device="mps") if src.device.type != "mps" else src
         encoded = torch.ops.fp8_mps.fp4_encode(src_mps)
@@ -152,7 +152,7 @@ def _metal_copy_(keyset, self, src, non_blocking=False):
         )
         return self
 
-    # Float → FP8 on MPS (encode)
+    # Float -> FP8 on MPS (encode)
     if not source_sub and _is_fp8(self.dtype) and dest_is_mps:
         src_mps = src.to(device="mps") if src.device.type != "mps" else src
         encoded = torch.ops.fp8_mps.encode(src_mps)

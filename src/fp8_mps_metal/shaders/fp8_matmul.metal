@@ -84,7 +84,7 @@ constant half fp4_e2m1fn_lut_half[16] = {
     -0.0h, -0.5h, -1.0h, -1.5h, -2.0h, -3.0h, -4.0h, -6.0h,
 };
 
-// Float → FP4 e2m1fn encode (nearest value from the 16-entry set)
+// Float -> FP4 e2m1fn encode (nearest value from the 16-entry set)
 inline uint8_t float_to_fp4_e2m1fn(float val) {
     uint sign = 0;
     if (val < 0.0f) { sign = 1; val = -val; }
@@ -101,7 +101,7 @@ inline uint8_t float_to_fp4_e2m1fn(float val) {
     return (sign << 3) | code;
 }
 
-// Float → FP8 encode using integer bit manipulation (no transcendentals)
+// Float -> FP8 encode using integer bit manipulation (no transcendentals)
 inline uint8_t float_to_fp8_e4m3fn(float val) {
     // Extract sign from float32 bits (handles -0.0 correctly)
     uint raw = as_type<uint>(val);
@@ -225,7 +225,7 @@ kernel void fp8_scaled_vecmat_kernel(
     }
 }
 
-// FP8 → half dequantize (direct half LUT, no float intermediate)
+// FP8 -> half dequantize (direct half LUT, no float intermediate)
 kernel void fp8_to_half_kernel(
     device const uint8_t* input [[buffer(0)]],
     device half* output [[buffer(1)]],
@@ -236,7 +236,7 @@ kernel void fp8_to_half_kernel(
     output[gid] = fp8_e4m3fn_lut_half[input[gid]];
 }
 
-// float → FP8 encode
+// float -> FP8 encode
 kernel void float_to_fp8_kernel(
     device const float* input [[buffer(0)]],
     device uint8_t* output [[buffer(1)]],
@@ -247,7 +247,7 @@ kernel void float_to_fp8_kernel(
     output[gid] = float_to_fp8_e4m3fn(input[gid]);
 }
 
-// FP4 x2 → half dequantize (unpack 2 nibbles per byte)
+// FP4 x2 -> half dequantize (unpack 2 nibbles per byte)
 kernel void fp4x2_to_half_kernel(
     device const uint8_t* input [[buffer(0)]],
     device half* output [[buffer(1)]],
@@ -260,7 +260,7 @@ kernel void fp4x2_to_half_kernel(
     output[gid * 2 + 1] = fp4_e2m1fn_lut_half[(byte >> 4) & 0xF];
 }
 
-// float → FP4 x2 encode (pack 2 nibbles per byte)
+// float -> FP4 x2 encode (pack 2 nibbles per byte)
 kernel void float_to_fp4x2_kernel(
     device const float* input [[buffer(0)]],
     device uint8_t* output [[buffer(1)]],
