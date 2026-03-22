@@ -108,12 +108,29 @@ class TestDtypeConversionMpsVsCpu:
 class TestMatmulMpsVsCpu:
     """Compare FP8 matmul on MPS vs CPU."""
 
-    def test_encode_matches_cpu(self):
-        """MPS Metal encode produces the same bytes as CPU torch.to(float8_e4m3fn)."""
-        values = torch.linspace(-400, 400, 1024)
-        cpu_bytes = values.to(torch.float8_e4m3fn).view(torch.uint8)
-        mps_bytes = torch.ops.fp8_mps.encode(values.to("mps")).cpu()
-        mismatches = (cpu_bytes != mps_bytes).sum().item()
-        assert mismatches == 0, (
-            f"{mismatches}/1024 bytes differ between CPU and MPS encode"
+    def test_encode_matches_cpu_exhaustive(self):
+        """MPS encode matches CPU for all 256 exact FP8 values and their midpoints."""
+        # Decode all 256 byte values to get the exact floats they represent
+        all_bytes = torch.arange(256, dtype=torch.uint8)
+        all_floats = all_bytes.view(torch.float8_e4m3fn).to(torch.float32)
+
+        # Test exact values: encoding the float that a byte decodes to
+        # should produce that same byte (excluding NaN bytes 0x7F and 0xFF)
+        valid = ~all_floats.isnan()
+        exact_values = all_floats[valid]
+        cpu_bytes = exact_values.to(torch.float8_e4m3fn).view(torch.uint8)
+        mps_bytes = torch.ops.fp8_mps.encode(exact_values.to("mps")).cpu()
+        diff = (cpu_bytes != mps_bytes)
+        assert diff.sum().item() == 0, (
+            f"{diff.sum().item()}/{len(exact_values)} exact-value mismatches"
+        )
+
+        # Test midpoints between adjacent positive values (where rounding matters)
+        pos_floats = all_floats[1:127]  # positive non-zero, non-NaN
+        midpoints = (pos_floats[:-1] + pos_floats[1:]) / 2
+        cpu_mid = midpoints.to(torch.float8_e4m3fn).view(torch.uint8)
+        mps_mid = torch.ops.fp8_mps.encode(midpoints.to("mps")).cpu()
+        mid_diff = (cpu_mid != mps_mid)
+        assert mid_diff.sum().item() == 0, (
+            f"{mid_diff.sum().item()}/{len(midpoints)} midpoint mismatches"
         )

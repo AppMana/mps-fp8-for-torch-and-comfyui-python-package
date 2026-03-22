@@ -103,38 +103,40 @@ inline uint8_t float_to_fp4_e2m1fn(float val) {
 
 // Float → FP8 encode using integer bit manipulation (no transcendentals)
 inline uint8_t float_to_fp8_e4m3fn(float val) {
-    uint sign = 0;
-    if (val < 0.0f) { sign = 1; val = -val; }
+    // Extract sign from float32 bits (handles -0.0 correctly)
+    uint raw = as_type<uint>(val);
+    uint sign = raw >> 31;
+    val = abs(val);
 
     if (val >= 448.0f) return (sign << 7) | 0x7E;
     if (val < (1.0f / 512.0f)) return sign << 7;
 
     // Extract exponent and mantissa from IEEE 754 float32 bits
     uint bits = as_type<uint>(val);
-    int f32_exp = int((bits >> 23) & 0xFF) - 127;  // unbiased float32 exponent
-    uint f32_mant = bits & 0x7FFFFF;                // 23-bit mantissa
+    int f32_exp = int((bits >> 23) & 0xFF) - 127;
+    uint f32_mant = bits & 0x7FFFFF;
 
     // Subnormal FP8: exponent would be <= -7 (biased 0)
+    // Use rint for banker's rounding at the subnormal/normal boundary
     if (f32_exp < -6) {
         float mant_f = val * 512.0f;
         uint mant = uint(rint(mant_f));
-        return (sign << 7) | uint8_t(min(mant, 7u));
+        if (mant >= 8) return (sign << 7) | 0x08;  // overflow to smallest normal
+        return (sign << 7) | uint8_t(mant);
     }
 
-    // Normal FP8: shift float32 mantissa down to 3 bits
-    // float32 has 23 mantissa bits, we need 3 → shift right by 20
-    // Round-half-to-even (banker's rounding) to match PyTorch CPU
-    uint truncated = f32_mant & 0xFFFFF;  // bottom 20 bits being discarded
+    // Normal FP8: shift float32 mantissa to 3 bits with round-half-to-even
+    uint truncated = f32_mant & 0xFFFFF;
     uint halfway = 1u << 19;
     uint mant = f32_mant >> 20;
     if (truncated > halfway || (truncated == halfway && (mant & 1))) {
         mant++;
     }
-    int fp8_exp = f32_exp + 7;                    // FP8 bias
+    int fp8_exp = f32_exp + 7;
 
-    if (mant > 7) { mant = 0; fp8_exp++; }       // mantissa overflow → bump exponent
+    if (mant > 7) { mant = 0; fp8_exp++; }
     fp8_exp = clamp(fp8_exp, 1, 15);
-    if (fp8_exp == 15 && mant == 7) mant = 6;    // avoid NaN encoding
+    if (fp8_exp == 15 && mant == 7) mant = 6;
 
     return (sign << 7) | uint8_t(fp8_exp << 3) | uint8_t(mant);
 }
