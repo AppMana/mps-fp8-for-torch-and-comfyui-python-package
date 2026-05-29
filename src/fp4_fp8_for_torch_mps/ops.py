@@ -13,8 +13,7 @@ _FP8_DTYPES = (
     getattr(torch, "float8_e5m2fnuz", None),
     getattr(torch, "float8_e8m0fnu", None),
 )
-
-_METAL_FP8_DTYPE = getattr(torch, "float8_e4m3fn", None)
+_FP8_E8M0FNU = getattr(torch, "float8_e8m0fnu", None)
 
 _FP4_DTYPES = (
     getattr(torch, "float4_e2m1fn_x2", None),
@@ -33,20 +32,6 @@ def _is_fp4(dtype):
 
 def _is_sub_byte(dtype):
     return dtype in _SUB_BYTE_DTYPES
-
-
-def _is_metal_fp8(dtype):
-    return dtype == _METAL_FP8_DTYPE
-
-
-def _cpu_encode_to_mps(input, dtype):
-    encoded_cpu = input.detach().to("cpu").to(dtype).view(torch.uint8)
-    return encoded_cpu.to("mps").view(dtype)
-
-
-def _cpu_decode_to_mps(input, dtype):
-    decoded_cpu = input.detach().view(torch.uint8).to("cpu").view(input.dtype).to(dtype)
-    return decoded_cpu.to("mps")
 
 
 def _metal_scaled_mm(self, mat2, scale_a, scale_b, bias=None, scale_result=None, out_dtype=None, use_fast_accum=False):
@@ -104,8 +89,8 @@ def _metal_to_copy(keyset, self, *, dtype=None, layout=None, device=None, pin_me
 
     # Float -> FP8 on MPS (encode)
     if target_is_mps and _is_fp8(target_dtype) and not source_sub_byte:
-        if not _is_metal_fp8(target_dtype):
-            return _cpu_encode_to_mps(self, target_dtype)
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_encode_fastest_dtype
+
         if self.device.type != "mps":
             ks = keyset.remove(torch._C.DispatchKey.MPS)
             on_mps = torch.ops.aten._to_copy.default.redispatch(
@@ -114,7 +99,7 @@ def _metal_to_copy(keyset, self, *, dtype=None, layout=None, device=None, pin_me
             )
         else:
             on_mps = self
-        return torch.ops.fp8_mps.encode(on_mps).view(target_dtype)
+        return fp8_encode_fastest_dtype(on_mps, target_dtype).view(target_dtype)
 
     # Sub-byte on MPS -> same type
     if source_sub_byte and self.device.type == "mps" and target_sub_byte:
@@ -133,14 +118,14 @@ def _metal_to_copy(keyset, self, *, dtype=None, layout=None, device=None, pin_me
 
     # FP8 on MPS -> non-sub-byte (dequantize)
     if _is_fp8(self.dtype) and self.device.type == "mps" and not target_sub_byte:
-        if not _is_metal_fp8(self.dtype):
-            return _cpu_decode_to_mps(self, target_dtype)
-        dequantized = torch.ops.fp8_mps.dequantize(
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_dequantize_fastest_dtype
+
+        out_dtype = torch.float32 if target_dtype == torch.float32 or self.dtype == _FP8_E8M0FNU else torch.float16
+        dequantized = fp8_dequantize_fastest_dtype(
             self.view(torch.uint8), torch.tensor([1.0], device="mps"),
+            self.dtype, out_dtype=out_dtype,
         )
-        if target_dtype != torch.float16:
-            dequantized = dequantized.to(target_dtype)
-        return dequantized
+        return dequantized if target_dtype == dequantized.dtype else dequantized.to(target_dtype)
 
     ks = keyset.remove(torch._C.DispatchKey.MPS)
     return torch.ops.aten._to_copy.default.redispatch(
@@ -177,15 +162,10 @@ def _metal_copy_(keyset, self, src, non_blocking=False):
 
     # Float -> FP8 on MPS (encode)
     if not source_sub and _is_fp8(self.dtype) and dest_is_mps:
-        if not _is_metal_fp8(self.dtype):
-            encoded = _cpu_encode_to_mps(src, self.dtype).view(torch.uint8)
-            ks = keyset.remove(torch._C.DispatchKey.MPS)
-            torch.ops.aten.copy_.default.redispatch(
-                ks, self.view(torch.uint8), encoded, non_blocking,
-            )
-            return self
+        from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_encode_fastest_dtype
+
         src_mps = src.to(device="mps") if src.device.type != "mps" else src
-        encoded = torch.ops.fp8_mps.encode(src_mps)
+        encoded = fp8_encode_fastest_dtype(src_mps, self.dtype)
         ks = keyset.remove(torch._C.DispatchKey.MPS)
         torch.ops.aten.copy_.default.redispatch(
             ks, self.view(torch.uint8), encoded, non_blocking,
@@ -197,6 +177,19 @@ def _metal_copy_(keyset, self, src, non_blocking=False):
 
 
 _aten_lib.impl("copy_", _metal_copy_, "MPS", with_keyset=True, allow_override=True)
+
+
+def _metal_embedding(keyset, weight, indices, padding_idx=-1, scale_grad_by_freq=False, sparse=False):
+    if _is_sub_byte(weight.dtype) and weight.device.type == "mps":
+        return weight[indices]
+
+    ks = keyset.remove(torch._C.DispatchKey.MPS)
+    return torch.ops.aten.embedding.default.redispatch(
+        ks, weight, indices, padding_idx, scale_grad_by_freq, sparse,
+    )
+
+
+_aten_lib.impl("embedding", _metal_embedding, "MPS", with_keyset=True, allow_override=True)
 
 
 @torch.library.custom_op("fp8_mps::scaled_mm", mutates_args=())

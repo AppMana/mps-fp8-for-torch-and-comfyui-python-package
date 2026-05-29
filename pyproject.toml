@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fp4-fp8-for-torch-mps"
-version = "1.0.1"
+version = "1.0.2"
 description = "FP8 and FP4 sub-byte dtype support for PyTorch MPS on Apple Silicon via Metal shaders"
 license-expression = "Apache-2.0"
 requires-python = ">=3.10"

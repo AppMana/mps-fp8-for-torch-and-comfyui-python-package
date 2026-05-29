@@ -1,8 +1,7 @@
 """MPS vs CPU validation tests.
 
-Ensures the MPS Metal GPU implementation produces identical results
-to the CPU fallback for FP8 encoding, decoding, roundtrip, dtype
-conversion, and matmul.
+Ensures the MPS Metal GPU implementation matches CPU Torch semantics
+for FP8 encoding, decoding, roundtrip, dtype conversion, and matmul.
 """
 
 import pytest

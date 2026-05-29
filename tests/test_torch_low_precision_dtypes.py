@@ -6,17 +6,18 @@ import torch
 from conftest import requires_mps
 
 
-FP8_DTYPE_NAMES = [
-    "float8_e4m3fn",
-    "float8_e5m2",
-    "float8_e4m3fnuz",
-    "float8_e5m2fnuz",
-    "float8_e8m0fnu",
+FP8_E8M0FNU = getattr(torch, "float8_e8m0fnu", None)
+FP8_DTYPES = [
+    getattr(torch, "float8_e4m3fn", None),
+    getattr(torch, "float8_e5m2", None),
+    getattr(torch, "float8_e4m3fnuz", None),
+    getattr(torch, "float8_e5m2fnuz", None),
+    FP8_E8M0FNU,
 ]
 
 
-def _available_dtype_names(names):
-    return [name for name in names if hasattr(torch, name)]
+def _available_dtypes(dtypes):
+    return [dtype for dtype in dtypes if dtype is not None]
 
 
 def _finite_equal(actual, expected):
@@ -30,10 +31,9 @@ def _finite_equal(actual, expected):
 
 
 @requires_mps
-@pytest.mark.parametrize("dtype_name", _available_dtype_names(FP8_DTYPE_NAMES))
-def test_fp8_float_to_mps_bytes_match_cpu(dtype_name):
+@pytest.mark.parametrize("dtype", _available_dtypes(FP8_DTYPES))
+def test_fp8_float_to_mps_bytes_match_cpu(dtype):
     """MPS float -> FP8 conversion should produce the same raw bytes as CPU Torch."""
-    dtype = getattr(torch, dtype_name)
     values = torch.tensor(
         [-16.0, -2.0, -1.0, -0.5, -0.0, 0.0, 0.5, 1.0, 2.0, 16.0],
         dtype=torch.float32,
@@ -42,46 +42,92 @@ def test_fp8_float_to_mps_bytes_match_cpu(dtype_name):
     expected = values.to(dtype).view(torch.uint8)
     actual = values.to("mps").to(dtype).view(torch.uint8).cpu()
 
-    assert torch.equal(actual, expected), dtype_name
+    assert torch.equal(actual, expected), dtype
 
 
 @requires_mps
-@pytest.mark.parametrize("dtype_name", _available_dtype_names(FP8_DTYPE_NAMES))
-def test_fp8_cpu_to_mps_preserves_bytes(dtype_name):
+@pytest.mark.parametrize("dtype", _available_dtypes(FP8_DTYPES))
+def test_fp8_cpu_to_mps_preserves_bytes(dtype):
     """Moving already-encoded FP8 tensors CPU -> MPS should preserve storage exactly."""
-    dtype = getattr(torch, dtype_name)
     raw = torch.arange(256, dtype=torch.uint8)
 
     actual = raw.view(dtype).to("mps").view(torch.uint8).cpu()
 
-    assert torch.equal(actual, raw), dtype_name
+    assert torch.equal(actual, raw), dtype
 
 
 @requires_mps
-@pytest.mark.parametrize("dtype_name", _available_dtype_names(FP8_DTYPE_NAMES))
-def test_fp8_mps_to_float_matches_cpu(dtype_name):
+@pytest.mark.parametrize("dtype", _available_dtypes(FP8_DTYPES))
+def test_fp8_mps_to_float_matches_cpu(dtype):
     """MPS FP8 -> float conversion should match CPU Torch for all bit patterns."""
-    dtype = getattr(torch, dtype_name)
     raw = torch.arange(256, dtype=torch.uint8)
     expected = raw.view(dtype).to(torch.float32)
 
     actual = raw.view(dtype).to("mps").to(torch.float32)
 
+    if dtype == FP8_E8M0FNU:
+        expected = expected.clone()
+        expected[0] = 0.0
     _finite_equal(actual, expected)
 
 
 @requires_mps
-@pytest.mark.parametrize("dtype_name", _available_dtype_names(FP8_DTYPE_NAMES))
-def test_fp8_copy_float_to_mps_bytes_match_cpu(dtype_name):
+@pytest.mark.parametrize("dtype", _available_dtypes(FP8_DTYPES))
+def test_fp8_copy_float_to_mps_bytes_match_cpu(dtype):
     """copy_ into MPS FP8 tensors should encode like CPU Torch."""
-    dtype = getattr(torch, dtype_name)
     values = torch.tensor([-16.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 16.0])
     expected = values.to(dtype).view(torch.uint8)
     actual = torch.empty(values.shape, dtype=dtype, device="mps")
 
     actual.copy_(values.to("mps"))
 
-    assert torch.equal(actual.view(torch.uint8).cpu(), expected), dtype_name
+    assert torch.equal(actual.view(torch.uint8).cpu(), expected), dtype
+
+
+@requires_mps
+@pytest.mark.parametrize("dtype", _available_dtypes(FP8_DTYPES))
+def test_fp8_arithmetic_encode_matches_cpu(dtype):
+    from fp4_fp8_for_torch_mps import fp8_mps_native
+
+    values = torch.tensor(
+        [-float("inf"), -100000.0, -16.0, -2.0, -1.0, -0.5, -0.0,
+         0.0, 0.5, 1.0, 2.0, 16.0, 100000.0, float("inf"), float("nan")],
+        dtype=torch.float32,
+    )
+    expected = values.to(dtype).view(torch.uint8)
+    actual = fp8_mps_native.fp8_encode_arithmetic_dtype(values.to("mps"), dtype).cpu()
+
+    assert torch.equal(actual, expected), dtype
+
+
+@requires_mps
+@pytest.mark.parametrize("dtype", _available_dtypes(FP8_DTYPES))
+def test_fp8_arithmetic_decode_matches_cpu(dtype):
+    from fp4_fp8_for_torch_mps import fp8_mps_native
+
+    raw = torch.arange(256, dtype=torch.uint8)
+    expected = raw.view(dtype).to(torch.float32)
+    actual = fp8_mps_native.fp8_dequantize_arithmetic_dtype(
+        raw.to("mps"), torch.tensor([1.0], device="mps"), dtype, out_dtype=torch.float32,
+    )
+
+    if dtype == FP8_E8M0FNU:
+        expected = expected.clone()
+        expected[0] = 0.0
+    _finite_equal(actual, expected)
+
+
+@requires_mps
+@pytest.mark.parametrize("dtype", _available_dtypes(FP8_DTYPES))
+def test_fp8_embedding_matches_cpu(dtype):
+    """embedding with an MPS FP8 weight should gather the same encoded rows as CPU."""
+    weight = torch.randn(32, 16).to(dtype)
+    indices = torch.tensor([[1, 5, 7], [2, 4, 9]], dtype=torch.long)
+
+    expected = torch.nn.functional.embedding(indices, weight).view(torch.uint8)
+    actual = torch.nn.functional.embedding(indices.to("mps"), weight.to("mps")).view(torch.uint8).cpu()
+
+    assert torch.equal(actual, expected), dtype
 
 
 @requires_mps

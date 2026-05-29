@@ -102,6 +102,160 @@ inline half fp8_e4m3fn_to_half_arithmetic(uint8_t bits) {
     return half(sign * value);
 }
 
+inline float float32_from_normal_parts(uint sign_bit, int exp_unbiased, uint mant_bits, uint mant_width) {
+    uint raw = (sign_bit ? 0x80000000u : 0u)
+        | (uint(exp_unbiased + 127) << 23)
+        | (mant_bits << (23 - mant_width));
+    return as_type<float>(raw);
+}
+
+inline float float32_from_scaled_uint(uint sign_bit, uint mant, int scale_exp) {
+    if (mant == 0) {
+        return sign_bit ? -0.0f : 0.0f;
+    }
+    uint highest = mant >= 4 ? 2 : (mant >= 2 ? 1 : 0);
+    int exp_unbiased = scale_exp + int(highest);
+    uint raw = (sign_bit ? 0x80000000u : 0u)
+        | (uint(exp_unbiased + 127) << 23)
+        | ((mant << (23 - highest)) & 0x7FFFFFu);
+    return as_type<float>(raw);
+}
+
+inline float float32_from_power2(int exp_unbiased) {
+    if (exp_unbiased >= -126) {
+        return as_type<float>(uint(exp_unbiased + 127) << 23);
+    }
+    return as_type<float>(1u << uint(exp_unbiased + 149));
+}
+
+inline float fp8_e5m2_to_float_arithmetic(uint8_t bits) {
+    uint sign_bit = bits & 0x80;
+    uint exp_bits = (bits >> 2) & 0x1F;
+    uint mant_bits = bits & 0x03;
+    if (exp_bits == 31) {
+        if (mant_bits == 0) return sign_bit ? -INFINITY: INFINITY;
+        return NAN;
+    }
+    if (exp_bits == 0) {
+        return float32_from_scaled_uint(sign_bit, mant_bits, -16);
+    }
+    return float32_from_normal_parts(sign_bit, int(exp_bits) - 15, mant_bits, 2);
+}
+
+inline float fp8_e4m3fnuz_to_float_arithmetic(uint8_t bits) {
+    if (bits == 0x80) return NAN;
+    uint sign_bit = bits & 0x80;
+    uint exp_bits = (bits >> 3) & 0x0F;
+    uint mant_bits = bits & 0x07;
+    if (exp_bits == 0) {
+        return float32_from_scaled_uint(sign_bit, mant_bits, -10);
+    }
+    return float32_from_normal_parts(sign_bit, int(exp_bits) - 8, mant_bits, 3);
+}
+
+inline float fp8_e5m2fnuz_to_float_arithmetic(uint8_t bits) {
+    if (bits == 0x80) return NAN;
+    uint sign_bit = bits & 0x80;
+    uint exp_bits = (bits >> 2) & 0x1F;
+    uint mant_bits = bits & 0x03;
+    if (exp_bits == 0) {
+        return float32_from_scaled_uint(sign_bit, mant_bits, -17);
+    }
+    return float32_from_normal_parts(sign_bit, int(exp_bits) - 16, mant_bits, 2);
+}
+
+inline float fp8_e8m0fnu_to_float_arithmetic(uint8_t bits) {
+    if (bits == 0xFF) return NAN;
+    return float32_from_power2(int(bits) - 127);
+}
+
+inline uint8_t float_to_fp8_e5m2(float val) {
+    uint raw = as_type<uint>(val);
+    uint sign = raw >> 31;
+    val = abs(val);
+    if (isnan(val)) return (sign << 7) | 0x7F;
+    if (isinf(val) || val >= 57344.0f) return (sign << 7) | 0x7C;
+    if (val == 0.0f) return sign << 7;
+
+    if (val < 0x1.0p-14f) {
+        uint mant = uint(rint(val * 65536.0f));
+        if (mant >= 4) return (sign << 7) | 0x04;
+        return (sign << 7) | uint8_t(mant);
+    }
+
+    int exp_unbiased = int(floor(log2(val)));
+    float base = exp2(float(exp_unbiased));
+    uint mant = uint(rint(((val / base) - 1.0f) * 4.0f));
+    int exp_code = exp_unbiased + 15;
+    if (mant > 3) {
+        mant = 0;
+        exp_code++;
+    }
+    if (exp_code >= 31) return (sign << 7) | 0x7C;
+    return (sign << 7) | uint8_t(exp_code << 2) | uint8_t(mant);
+}
+
+inline uint8_t float_to_fp8_e4m3fnuz(float val) {
+    uint raw = as_type<uint>(val);
+    uint sign = raw >> 31;
+    val = abs(val);
+    if (isnan(val) || isinf(val)) return 0x80;
+    if (val == 0.0f) return 0;
+    if (val > 240.0f) return 0x80;
+
+    if (val < 0x1.0p-7f) {
+        uint mant = uint(rint(val * 1024.0f));
+        if (mant >= 8) return (sign << 7) | 0x08;
+        return (sign << 7) | uint8_t(mant);
+    }
+
+    int exp_unbiased = int(floor(log2(val)));
+    float base = exp2(float(exp_unbiased));
+    uint mant = uint(rint(((val / base) - 1.0f) * 8.0f));
+    int exp_code = exp_unbiased + 8;
+    if (mant > 7) {
+        mant = 0;
+        exp_code++;
+    }
+    if (exp_code > 15) return 0x80;
+    return (sign << 7) | uint8_t(exp_code << 3) | uint8_t(mant);
+}
+
+inline uint8_t float_to_fp8_e5m2fnuz(float val) {
+    uint raw = as_type<uint>(val);
+    uint sign = raw >> 31;
+    val = abs(val);
+    if (isnan(val) || isinf(val)) return 0x80;
+    if (val == 0.0f) return 0;
+    if (val > 57344.0f) return 0x80;
+
+    if (val < 0x1.0p-15f) {
+        uint mant = uint(rint(val * 131072.0f));
+        if (mant >= 4) return (sign << 7) | 0x04;
+        return (sign << 7) | uint8_t(mant);
+    }
+
+    int exp_unbiased = int(floor(log2(val)));
+    float base = exp2(float(exp_unbiased));
+    uint mant = uint(rint(((val / base) - 1.0f) * 4.0f));
+    int exp_code = exp_unbiased + 16;
+    if (mant > 3) {
+        mant = 0;
+        exp_code++;
+    }
+    if (exp_code > 31) return 0x80;
+    return (sign << 7) | uint8_t(exp_code << 2) | uint8_t(mant);
+}
+
+inline uint8_t float_to_fp8_e8m0fnu(float val) {
+    val = abs(val);
+    if (isnan(val) || isinf(val)) return 0xFF;
+    if (val == 0.0f) return 0;
+    int code = int(rint(log2(val))) + 127;
+    code = clamp(code, 0, 254);
+    return uint8_t(code);
+}
+
 inline half fp4_e2m1fn_to_half_arithmetic(uint8_t nibble) {
     uint sign = nibble & 0x08;
     uint exp_bits = (nibble >> 1) & 0x03;
@@ -141,7 +295,8 @@ inline uint8_t float_to_fp8_e4m3fn(float val) {
     uint sign = raw >> 31;
     val = abs(val);
 
-    if (val >= 448.0f) return (sign << 7) | 0x7E;
+    if (isnan(val)) return 0x7F;
+    if (val > 448.0f || isinf(val)) return (sign << 7) | 0x7F;
     if (val < (1.0f / 512.0f)) return sign << 7;
 
     // Extract exponent and mantissa from IEEE 754 float32 bits
@@ -280,55 +435,155 @@ kernel void fp8_to_half_arithmetic_kernel(
     output[gid] = fp8_e4m3fn_to_half_arithmetic(input[gid]);
 }
 
-kernel void fp8_to_half_lut4_kernel(
-    device const uint8_t* input [[buffer(0)]],
-    device half* output [[buffer(1)]],
-    constant uint& count [[buffer(2)]],
-    uint gid [[thread_position_in_grid]]
-) {
-    uint base = gid * 4;
-    if (base >= count) return;
-
-    uint4 packed = uint4(0);
-    uint remaining = count - base;
-    if (remaining >= 4) {
-        packed.x = input[base];
-        packed.y = input[base + 1];
-        packed.z = input[base + 2];
-        packed.w = input[base + 3];
-        output[base] = fp8_e4m3fn_lut_half[packed.x];
-        output[base + 1] = fp8_e4m3fn_lut_half[packed.y];
-        output[base + 2] = fp8_e4m3fn_lut_half[packed.z];
-        output[base + 3] = fp8_e4m3fn_lut_half[packed.w];
-        return;
-    }
-
-    for (uint i = 0; i < remaining; i++) {
-        output[base + i] = fp8_e4m3fn_lut_half[input[base + i]];
-    }
+kernel void fp8_e5m2_to_half_arithmetic_kernel(device const uint8_t* input [[buffer(0)]], device half* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = half(fp8_e5m2_to_float_arithmetic(input[gid]));
 }
 
-kernel void fp8_to_half_arithmetic4_kernel(
+kernel void fp8_e4m3fnuz_to_half_arithmetic_kernel(device const uint8_t* input [[buffer(0)]], device half* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = half(fp8_e4m3fnuz_to_float_arithmetic(input[gid]));
+}
+
+kernel void fp8_e5m2fnuz_to_half_arithmetic_kernel(device const uint8_t* input [[buffer(0)]], device half* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = half(fp8_e5m2fnuz_to_float_arithmetic(input[gid]));
+}
+
+kernel void fp8_e8m0fnu_to_half_arithmetic_kernel(device const uint8_t* input [[buffer(0)]], device half* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = half(fp8_e8m0fnu_to_float_arithmetic(input[gid]));
+}
+
+kernel void fp8_e4m3fn_to_float_arithmetic_kernel(device const uint8_t* input [[buffer(0)]], device float* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float(fp8_e4m3fn_to_half_arithmetic(input[gid]));
+}
+
+kernel void fp8_e5m2_to_float_arithmetic_kernel(device const uint8_t* input [[buffer(0)]], device float* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = fp8_e5m2_to_float_arithmetic(input[gid]);
+}
+
+kernel void fp8_e4m3fnuz_to_float_arithmetic_kernel(device const uint8_t* input [[buffer(0)]], device float* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = fp8_e4m3fnuz_to_float_arithmetic(input[gid]);
+}
+
+kernel void fp8_e5m2fnuz_to_float_arithmetic_kernel(device const uint8_t* input [[buffer(0)]], device float* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = fp8_e5m2fnuz_to_float_arithmetic(input[gid]);
+}
+
+kernel void fp8_e8m0fnu_to_float_arithmetic_kernel(device const uint8_t* input [[buffer(0)]], device float* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = fp8_e8m0fnu_to_float_arithmetic(input[gid]);
+}
+
+kernel void fp8_lut_to_half_kernel(
     device const uint8_t* input [[buffer(0)]],
-    device half* output [[buffer(1)]],
-    constant uint& count [[buffer(2)]],
+    device const half* lut [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant uint& count [[buffer(3)]],
     uint gid [[thread_position_in_grid]]
 ) {
-    uint base = gid * 4;
-    if (base >= count) return;
+    if (gid >= count) return;
+    output[gid] = lut[input[gid]];
+}
 
-    uint remaining = count - base;
-    if (remaining >= 4) {
-        output[base] = fp8_e4m3fn_to_half_arithmetic(input[base]);
-        output[base + 1] = fp8_e4m3fn_to_half_arithmetic(input[base + 1]);
-        output[base + 2] = fp8_e4m3fn_to_half_arithmetic(input[base + 2]);
-        output[base + 3] = fp8_e4m3fn_to_half_arithmetic(input[base + 3]);
-        return;
+kernel void fp8_lut_to_float_kernel(
+    device const uint8_t* input [[buffer(0)]],
+    device const float* lut [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant uint& count [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    output[gid] = lut[input[gid]];
+}
+
+kernel void fp8_lut_bits_to_float_kernel(
+    device const uint8_t* input [[buffer(0)]],
+    device const uint* lut [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant uint& count [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    output[gid] = as_type<float>(lut[input[gid]]);
+}
+
+inline uint8_t float_to_fp8_lut_search(float x, device const float* values, uint pos_lo, uint pos_hi, uint neg_lo, uint neg_hi, uint nan_code, uint neg_inf_code, uint pos_inf_code, uint neg_zero_code, bool unsigned_input) {
+    if (isnan(x)) {
+        return uint8_t(nan_code);
+    }
+    if (x == 0.0f && signbit(x)) {
+        return uint8_t(neg_zero_code);
+    }
+    if (isinf(x)) {
+        return uint8_t(signbit(x) ? neg_inf_code : pos_inf_code);
+    }
+    if (unsigned_input) x = abs(x);
+
+    bool negative = signbit(x);
+    float ax = abs(x);
+
+    uint lo = negative ? neg_lo : pos_lo;
+    uint hi = negative ? neg_hi : pos_hi;
+
+    if (ax <= abs(values[lo])) {
+        return uint8_t(lo);
+    }
+    if (ax >= abs(values[hi])) {
+        return uint8_t(hi);
     }
 
-    for (uint i = 0; i < remaining; i++) {
-        output[base + i] = fp8_e4m3fn_to_half_arithmetic(input[base + i]);
+    uint left = lo;
+    uint right = hi;
+    while (right - left > 1) {
+        uint mid = (left + right) >> 1;
+        float mv = abs(values[mid]);
+        if (mv < ax) {
+            left = mid;
+        } else {
+            right = mid;
+        }
     }
+
+    float dl = abs(ax - abs(values[left]));
+    float dr = abs(abs(values[right]) - ax);
+    if (dr < dl) {
+        return uint8_t(right);
+    }
+    if (dl < dr) {
+        return uint8_t(left);
+    }
+    return uint8_t((left & 1) == 0 ? left : right);
+}
+
+kernel void float_to_fp8_e4m3fn_lut_kernel(device const float* input [[buffer(0)]], device const float* values [[buffer(1)]], device uint8_t* output [[buffer(2)]], constant uint& count [[buffer(3)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float_to_fp8_lut_search(input[gid], values, 0, 126, 129, 254, 0x7F, 0xFF, 0x7F, 0x80, false);
+}
+
+kernel void float_to_fp8_e5m2_lut_kernel(device const float* input [[buffer(0)]], device const float* values [[buffer(1)]], device uint8_t* output [[buffer(2)]], constant uint& count [[buffer(3)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float_to_fp8_lut_search(input[gid], values, 0, 124, 129, 252, 0x7F, 0xFC, 0x7C, 0x80, false);
+}
+
+kernel void float_to_fp8_e4m3fnuz_lut_kernel(device const float* input [[buffer(0)]], device const float* values [[buffer(1)]], device uint8_t* output [[buffer(2)]], constant uint& count [[buffer(3)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float_to_fp8_lut_search(input[gid], values, 0, 127, 129, 255, 0x80, 0x80, 0x80, 0x00, false);
+}
+
+kernel void float_to_fp8_e5m2fnuz_lut_kernel(device const float* input [[buffer(0)]], device const float* values [[buffer(1)]], device uint8_t* output [[buffer(2)]], constant uint& count [[buffer(3)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float_to_fp8_lut_search(input[gid], values, 0, 127, 129, 255, 0x80, 0x80, 0x80, 0x00, false);
+}
+
+kernel void float_to_fp8_e8m0fnu_lut_kernel(device const float* input [[buffer(0)]], device const float* values [[buffer(1)]], device uint8_t* output [[buffer(2)]], constant uint& count [[buffer(3)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float_to_fp8_lut_search(input[gid], values, 0, 254, 0, 254, 0xFF, 0xFF, 0xFF, 0x00, true);
 }
 
 // float -> FP8 encode
@@ -340,6 +595,26 @@ kernel void float_to_fp8_kernel(
 ) {
     if (gid >= count) return;
     output[gid] = float_to_fp8_e4m3fn(input[gid]);
+}
+
+kernel void float_to_fp8_e5m2_arithmetic_kernel(device const float* input [[buffer(0)]], device uint8_t* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float_to_fp8_e5m2(input[gid]);
+}
+
+kernel void float_to_fp8_e4m3fnuz_arithmetic_kernel(device const float* input [[buffer(0)]], device uint8_t* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float_to_fp8_e4m3fnuz(input[gid]);
+}
+
+kernel void float_to_fp8_e5m2fnuz_arithmetic_kernel(device const float* input [[buffer(0)]], device uint8_t* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float_to_fp8_e5m2fnuz(input[gid]);
+}
+
+kernel void float_to_fp8_e8m0fnu_arithmetic_kernel(device const float* input [[buffer(0)]], device uint8_t* output [[buffer(1)]], constant uint& count [[buffer(2)]], uint gid [[thread_position_in_grid]]) {
+    if (gid >= count) return;
+    output[gid] = float_to_fp8_e8m0fnu(input[gid]);
 }
 
 // FP4 x2 -> half dequantize (unpack 2 nibbles per byte)
@@ -366,74 +641,6 @@ kernel void fp4x2_to_half_arithmetic_kernel(
     uint8_t byte = input[gid];
     output[gid * 2]     = fp4_e2m1fn_to_half_arithmetic(byte & 0xF);
     output[gid * 2 + 1] = fp4_e2m1fn_to_half_arithmetic((byte >> 4) & 0xF);
-}
-
-kernel void fp4x2_to_half_lut4_kernel(
-    device const uint8_t* input [[buffer(0)]],
-    device half* output [[buffer(1)]],
-    constant uint& count [[buffer(2)]],
-    uint gid [[thread_position_in_grid]]
-) {
-    uint base = gid * 4;
-    if (base >= count) return;
-
-    uint remaining = count - base;
-    if (remaining >= 4) {
-        uint8_t b0 = input[base];
-        uint8_t b1 = input[base + 1];
-        uint8_t b2 = input[base + 2];
-        uint8_t b3 = input[base + 3];
-
-        output[base * 2] = fp4_e2m1fn_lut_half[b0 & 0xF];
-        output[base * 2 + 1] = fp4_e2m1fn_lut_half[(b0 >> 4) & 0xF];
-        output[base * 2 + 2] = fp4_e2m1fn_lut_half[b1 & 0xF];
-        output[base * 2 + 3] = fp4_e2m1fn_lut_half[(b1 >> 4) & 0xF];
-        output[base * 2 + 4] = fp4_e2m1fn_lut_half[b2 & 0xF];
-        output[base * 2 + 5] = fp4_e2m1fn_lut_half[(b2 >> 4) & 0xF];
-        output[base * 2 + 6] = fp4_e2m1fn_lut_half[b3 & 0xF];
-        output[base * 2 + 7] = fp4_e2m1fn_lut_half[(b3 >> 4) & 0xF];
-        return;
-    }
-
-    for (uint i = 0; i < remaining; i++) {
-        uint8_t byte = input[base + i];
-        output[(base + i) * 2] = fp4_e2m1fn_lut_half[byte & 0xF];
-        output[(base + i) * 2 + 1] = fp4_e2m1fn_lut_half[(byte >> 4) & 0xF];
-    }
-}
-
-kernel void fp4x2_to_half_arithmetic4_kernel(
-    device const uint8_t* input [[buffer(0)]],
-    device half* output [[buffer(1)]],
-    constant uint& count [[buffer(2)]],
-    uint gid [[thread_position_in_grid]]
-) {
-    uint base = gid * 4;
-    if (base >= count) return;
-
-    uint remaining = count - base;
-    if (remaining >= 4) {
-        uint8_t b0 = input[base];
-        uint8_t b1 = input[base + 1];
-        uint8_t b2 = input[base + 2];
-        uint8_t b3 = input[base + 3];
-
-        output[base * 2] = fp4_e2m1fn_to_half_arithmetic(b0 & 0xF);
-        output[base * 2 + 1] = fp4_e2m1fn_to_half_arithmetic((b0 >> 4) & 0xF);
-        output[base * 2 + 2] = fp4_e2m1fn_to_half_arithmetic(b1 & 0xF);
-        output[base * 2 + 3] = fp4_e2m1fn_to_half_arithmetic((b1 >> 4) & 0xF);
-        output[base * 2 + 4] = fp4_e2m1fn_to_half_arithmetic(b2 & 0xF);
-        output[base * 2 + 5] = fp4_e2m1fn_to_half_arithmetic((b2 >> 4) & 0xF);
-        output[base * 2 + 6] = fp4_e2m1fn_to_half_arithmetic(b3 & 0xF);
-        output[base * 2 + 7] = fp4_e2m1fn_to_half_arithmetic((b3 >> 4) & 0xF);
-        return;
-    }
-
-    for (uint i = 0; i < remaining; i++) {
-        uint8_t byte = input[base + i];
-        output[(base + i) * 2] = fp4_e2m1fn_to_half_arithmetic(byte & 0xF);
-        output[(base + i) * 2 + 1] = fp4_e2m1fn_to_half_arithmetic((byte >> 4) & 0xF);
-    }
 }
 
 // float -> FP4 x2 encode (pack 2 nibbles per byte)

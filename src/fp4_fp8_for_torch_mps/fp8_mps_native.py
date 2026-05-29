@@ -5,7 +5,13 @@ import torch
 
 _lib = None
 _SHADER_SOURCE = None
-_DECODE_BACKENDS = {"lut", "arithmetic", "lut4", "arithmetic4", "auto"}
+_FP8_LUTS = {}
+_FP8_E4M3FN = getattr(torch, "float8_e4m3fn", None)
+_FP8_E5M2 = getattr(torch, "float8_e5m2", None)
+_FP8_E4M3FNUZ = getattr(torch, "float8_e4m3fnuz", None)
+_FP8_E5M2FNUZ = getattr(torch, "float8_e5m2fnuz", None)
+_FP8_E8M0FNU = getattr(torch, "float8_e8m0fnu", None)
+_DECODE_BACKENDS = {"lut", "arithmetic", "auto"}
 _decode_backend = os.environ.get("FP4_FP8_MPS_DECODE_BACKEND", "lut").lower()
 if _decode_backend not in _DECODE_BACKENDS:
     _decode_backend = "lut"
@@ -26,6 +32,23 @@ def _get_lib():
         return _lib
     _lib = torch.mps.compile_shader(_load_shader_source())
     return _lib
+
+
+def _fp8_luts(dtype):
+    if dtype is None:
+        raise RuntimeError("requested FP8 dtype is not available in this torch build")
+    cached = _FP8_LUTS.get(dtype)
+    if cached is not None:
+        return cached
+
+    raw = torch.arange(256, dtype=torch.uint8)
+    values = raw.view(dtype).to(torch.float32)
+    values_mps = values.to("mps").contiguous()
+    value_bits_mps = values.view(torch.int32).to("mps").contiguous()
+    half_mps = values.to(torch.float16).to("mps").contiguous()
+    cached = (values_mps, value_bits_mps, half_mps)
+    _FP8_LUTS[dtype] = cached
+    return cached
 
 
 def set_decode_backend(backend: str) -> None:
@@ -89,12 +112,8 @@ def fp8_scaled_mm(A, B, scale_a, scale_b):
 
 
 def fp8_dequantize(input, scale):
-    if _resolve_decode_backend(input) == "lut4":
-        return fp8_dequantize_lut4(input, scale)
     if _resolve_decode_backend(input) == "arithmetic":
         return fp8_dequantize_arithmetic(input, scale)
-    if _resolve_decode_backend(input) == "arithmetic4":
-        return fp8_dequantize_arithmetic4(input, scale)
     return fp8_dequantize_lut(input, scale)
 
 
@@ -138,48 +157,6 @@ def fp8_dequantize_arithmetic(input, scale):
     return output
 
 
-def fp8_dequantize_lut4(input, scale):
-    lib = _get_lib()
-
-    if input.device.type != "mps":
-        input = input.to("mps")
-
-    count = input.numel()
-    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
-    threads = (count + 3) // 4
-
-    lib.fp8_to_half_lut4_kernel(
-        input.contiguous().view(-1), output.view(-1),
-        count,
-        threads=(threads,), group_size=(256,),
-    )
-
-    scale_val = scale.to(device="mps", dtype=torch.float16)
-    output = output * scale_val
-    return output
-
-
-def fp8_dequantize_arithmetic4(input, scale):
-    lib = _get_lib()
-
-    if input.device.type != "mps":
-        input = input.to("mps")
-
-    count = input.numel()
-    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
-    threads = (count + 3) // 4
-
-    lib.fp8_to_half_arithmetic4_kernel(
-        input.contiguous().view(-1), output.view(-1),
-        count,
-        threads=(threads,), group_size=(256,),
-    )
-
-    scale_val = scale.to(device="mps", dtype=torch.float16)
-    output = output * scale_val
-    return output
-
-
 def fp8_encode(input):
     lib = _get_lib()
 
@@ -194,6 +171,322 @@ def fp8_encode(input):
     )
 
     return output
+
+
+def _prepare_float_input(input):
+    inp = input.to(device="mps", dtype=torch.float32).contiguous()
+    output = torch.empty(inp.shape, dtype=torch.uint8, device="mps")
+    return inp, output, inp.numel()
+
+
+def fp8_encode_lut_e4m3fn(input):
+    lib = _get_lib()
+    values, _, _ = _fp8_luts(_FP8_E4M3FN)
+    inp, output, count = _prepare_float_input(input)
+
+    lib.float_to_fp8_e4m3fn_lut_kernel(
+        inp.view(-1), values, output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp8_encode_lut_e5m2(input):
+    lib = _get_lib()
+    values, _, _ = _fp8_luts(_FP8_E5M2)
+    inp, output, count = _prepare_float_input(input)
+
+    lib.float_to_fp8_e5m2_lut_kernel(
+        inp.view(-1), values, output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp8_encode_lut_e4m3fnuz(input):
+    lib = _get_lib()
+    values, _, _ = _fp8_luts(_FP8_E4M3FNUZ)
+    inp, output, count = _prepare_float_input(input)
+
+    lib.float_to_fp8_e4m3fnuz_lut_kernel(
+        inp.view(-1), values, output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp8_encode_lut_e5m2fnuz(input):
+    lib = _get_lib()
+    values, _, _ = _fp8_luts(_FP8_E5M2FNUZ)
+    inp, output, count = _prepare_float_input(input)
+
+    lib.float_to_fp8_e5m2fnuz_lut_kernel(
+        inp.view(-1), values, output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp8_encode_lut_e8m0fnu(input):
+    lib = _get_lib()
+    values, _, _ = _fp8_luts(_FP8_E8M0FNU)
+    inp, output, count = _prepare_float_input(input)
+
+    lib.float_to_fp8_e8m0fnu_lut_kernel(
+        inp.view(-1), values, output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp8_encode_lut_dtype(input, dtype):
+    return {
+        _FP8_E4M3FN: fp8_encode_lut_e4m3fn,
+        _FP8_E5M2: fp8_encode_lut_e5m2,
+        _FP8_E4M3FNUZ: fp8_encode_lut_e4m3fnuz,
+        _FP8_E5M2FNUZ: fp8_encode_lut_e5m2fnuz,
+        _FP8_E8M0FNU: fp8_encode_lut_e8m0fnu,
+    }[dtype](input)
+
+
+def fp8_encode_arithmetic_e4m3fn(input):
+    return fp8_encode(input)
+
+
+def fp8_encode_arithmetic_e5m2(input):
+    lib = _get_lib()
+    inp, output, count = _prepare_float_input(input)
+
+    lib.float_to_fp8_e5m2_arithmetic_kernel(
+        inp.view(-1), output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp8_encode_arithmetic_e4m3fnuz(input):
+    lib = _get_lib()
+    inp, output, count = _prepare_float_input(input)
+
+    lib.float_to_fp8_e4m3fnuz_arithmetic_kernel(
+        inp.view(-1), output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp8_encode_arithmetic_e5m2fnuz(input):
+    lib = _get_lib()
+    inp, output, count = _prepare_float_input(input)
+
+    lib.float_to_fp8_e5m2fnuz_arithmetic_kernel(
+        inp.view(-1), output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp8_encode_arithmetic_e8m0fnu(input):
+    lib = _get_lib()
+    inp, output, count = _prepare_float_input(input)
+
+    lib.float_to_fp8_e8m0fnu_arithmetic_kernel(
+        inp.view(-1), output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    return output
+
+
+def fp8_encode_arithmetic_dtype(input, dtype):
+    return {
+        _FP8_E4M3FN: fp8_encode_arithmetic_e4m3fn,
+        _FP8_E5M2: fp8_encode_arithmetic_e5m2,
+        _FP8_E4M3FNUZ: fp8_encode_arithmetic_e4m3fnuz,
+        _FP8_E5M2FNUZ: fp8_encode_arithmetic_e5m2fnuz,
+        _FP8_E8M0FNU: fp8_encode_arithmetic_e8m0fnu,
+    }[dtype](input)
+
+
+def fp8_encode_fastest_dtype(input, dtype):
+    return {
+        _FP8_E4M3FN: fp8_encode_arithmetic_e4m3fn,
+        _FP8_E5M2: fp8_encode_arithmetic_e5m2,
+        _FP8_E4M3FNUZ: fp8_encode_arithmetic_e4m3fnuz,
+        _FP8_E5M2FNUZ: fp8_encode_lut_e5m2fnuz,
+        _FP8_E8M0FNU: fp8_encode_arithmetic_e8m0fnu,
+    }[dtype](input)
+
+
+def _run_fp8_dequantize_lut(input, scale, dtype, out_dtype):
+    lib = _get_lib()
+    values, value_bits, half_values = _fp8_luts(dtype)
+
+    if input.device.type != "mps":
+        input = input.to("mps")
+
+    count = input.numel()
+    if out_dtype == torch.float32:
+        output = torch.empty(input.shape, dtype=torch.float32, device="mps")
+        if dtype == _FP8_E8M0FNU:
+            lib.fp8_lut_bits_to_float_kernel(
+                input.contiguous().view(-1), value_bits, output.view(-1),
+                count,
+                threads=(count,), group_size=(256,),
+            )
+        else:
+            lib.fp8_lut_to_float_kernel(
+                input.contiguous().view(-1), values, output.view(-1),
+                count,
+                threads=(count,), group_size=(256,),
+            )
+        scale_val = scale.to(device="mps", dtype=torch.float32)
+    else:
+        output = torch.empty(input.shape, dtype=torch.float16, device="mps")
+        lib.fp8_lut_to_half_kernel(
+            input.contiguous().view(-1), half_values, output.view(-1),
+            count,
+            threads=(count,), group_size=(256,),
+        )
+        scale_val = scale.to(device="mps", dtype=torch.float16)
+    return output * scale_val
+
+
+def fp8_dequantize_lut_e4m3fn(input, scale, out_dtype=torch.float16):
+    return _run_fp8_dequantize_lut(input, scale, _FP8_E4M3FN, out_dtype)
+
+
+def fp8_dequantize_lut_e5m2(input, scale, out_dtype=torch.float16):
+    return _run_fp8_dequantize_lut(input, scale, _FP8_E5M2, out_dtype)
+
+
+def fp8_dequantize_lut_e4m3fnuz(input, scale, out_dtype=torch.float16):
+    return _run_fp8_dequantize_lut(input, scale, _FP8_E4M3FNUZ, out_dtype)
+
+
+def fp8_dequantize_lut_e5m2fnuz(input, scale, out_dtype=torch.float16):
+    return _run_fp8_dequantize_lut(input, scale, _FP8_E5M2FNUZ, out_dtype)
+
+
+def fp8_dequantize_lut_e8m0fnu(input, scale, out_dtype=torch.float16):
+    return _run_fp8_dequantize_lut(input, scale, _FP8_E8M0FNU, out_dtype)
+
+
+def fp8_dequantize_lut_dtype(input, scale, dtype, out_dtype=torch.float16):
+    return {
+        _FP8_E4M3FN: fp8_dequantize_lut_e4m3fn,
+        _FP8_E5M2: fp8_dequantize_lut_e5m2,
+        _FP8_E4M3FNUZ: fp8_dequantize_lut_e4m3fnuz,
+        _FP8_E5M2FNUZ: fp8_dequantize_lut_e5m2fnuz,
+        _FP8_E8M0FNU: fp8_dequantize_lut_e8m0fnu,
+    }[dtype](input, scale, out_dtype=out_dtype)
+
+
+def fp8_dequantize_arithmetic_e4m3fn(input, scale, out_dtype=torch.float16):
+    lib = _get_lib()
+    if input.device.type != "mps":
+        input = input.to("mps")
+    count = input.numel()
+    if out_dtype == torch.float32:
+        output = torch.empty(input.shape, dtype=torch.float32, device="mps")
+        lib.fp8_e4m3fn_to_float_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+        return output * scale.to(device="mps", dtype=torch.float32)
+    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
+    lib.fp8_to_half_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+    return output * scale.to(device="mps", dtype=torch.float16)
+
+
+def fp8_dequantize_arithmetic_e5m2(input, scale, out_dtype=torch.float16):
+    lib = _get_lib()
+    if input.device.type != "mps":
+        input = input.to("mps")
+    count = input.numel()
+    if out_dtype == torch.float32:
+        output = torch.empty(input.shape, dtype=torch.float32, device="mps")
+        lib.fp8_e5m2_to_float_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+        return output * scale.to(device="mps", dtype=torch.float32)
+    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
+    lib.fp8_e5m2_to_half_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+    return output * scale.to(device="mps", dtype=torch.float16)
+
+
+def fp8_dequantize_arithmetic_e4m3fnuz(input, scale, out_dtype=torch.float16):
+    lib = _get_lib()
+    if input.device.type != "mps":
+        input = input.to("mps")
+    count = input.numel()
+    if out_dtype == torch.float32:
+        output = torch.empty(input.shape, dtype=torch.float32, device="mps")
+        lib.fp8_e4m3fnuz_to_float_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+        return output * scale.to(device="mps", dtype=torch.float32)
+    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
+    lib.fp8_e4m3fnuz_to_half_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+    return output * scale.to(device="mps", dtype=torch.float16)
+
+
+def fp8_dequantize_arithmetic_e5m2fnuz(input, scale, out_dtype=torch.float16):
+    lib = _get_lib()
+    if input.device.type != "mps":
+        input = input.to("mps")
+    count = input.numel()
+    if out_dtype == torch.float32:
+        output = torch.empty(input.shape, dtype=torch.float32, device="mps")
+        lib.fp8_e5m2fnuz_to_float_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+        return output * scale.to(device="mps", dtype=torch.float32)
+    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
+    lib.fp8_e5m2fnuz_to_half_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+    return output * scale.to(device="mps", dtype=torch.float16)
+
+
+def fp8_dequantize_arithmetic_e8m0fnu(input, scale, out_dtype=torch.float16):
+    lib = _get_lib()
+    if input.device.type != "mps":
+        input = input.to("mps")
+    count = input.numel()
+    if out_dtype == torch.float32:
+        output = torch.empty(input.shape, dtype=torch.float32, device="mps")
+        lib.fp8_e8m0fnu_to_float_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+        return output * scale.to(device="mps", dtype=torch.float32)
+    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
+    lib.fp8_e8m0fnu_to_half_arithmetic_kernel(input.contiguous().view(-1), output.view(-1), count, threads=(count,), group_size=(256,))
+    return output * scale.to(device="mps", dtype=torch.float16)
+
+
+def fp8_dequantize_arithmetic_dtype(input, scale, dtype, out_dtype=torch.float16):
+    return {
+        _FP8_E4M3FN: fp8_dequantize_arithmetic_e4m3fn,
+        _FP8_E5M2: fp8_dequantize_arithmetic_e5m2,
+        _FP8_E4M3FNUZ: fp8_dequantize_arithmetic_e4m3fnuz,
+        _FP8_E5M2FNUZ: fp8_dequantize_arithmetic_e5m2fnuz,
+        _FP8_E8M0FNU: fp8_dequantize_arithmetic_e8m0fnu,
+    }[dtype](input, scale, out_dtype=out_dtype)
+
+
+def fp8_dequantize_fastest_dtype(input, scale, dtype, out_dtype=torch.float16):
+    return {
+        _FP8_E4M3FN: fp8_dequantize_lut_e4m3fn,
+        _FP8_E5M2: fp8_dequantize_lut_e5m2,
+        _FP8_E4M3FNUZ: fp8_dequantize_lut_e4m3fnuz,
+        _FP8_E5M2FNUZ: fp8_dequantize_lut_e5m2fnuz,
+        _FP8_E8M0FNU: fp8_dequantize_arithmetic_e8m0fnu,
+    }[dtype](input, scale, out_dtype=out_dtype)
 
 
 def fp8_quantize(input):
@@ -258,12 +551,8 @@ def fp8_scaled_mm_fast(A, B, scale_a, scale_b):
 
 
 def fp4_dequantize(input, scale):
-    if _resolve_decode_backend(input) == "lut4":
-        return fp4_dequantize_lut4(input, scale)
     if _resolve_decode_backend(input) == "arithmetic":
         return fp4_dequantize_arithmetic(input, scale)
-    if _resolve_decode_backend(input) == "arithmetic4":
-        return fp4_dequantize_arithmetic4(input, scale)
     return fp4_dequantize_lut(input, scale)
 
 
@@ -300,48 +589,6 @@ def fp4_dequantize_arithmetic(input, scale):
         input.contiguous().view(-1), output,
         num_bytes,
         threads=(num_bytes,), group_size=(256,),
-    )
-
-    scale_val = scale.to(device="mps", dtype=torch.float16)
-    output = output * scale_val
-    return output
-
-
-def fp4_dequantize_lut4(input, scale):
-    lib = _get_lib()
-
-    if input.device.type != "mps":
-        input = input.to("mps")
-
-    num_bytes = input.numel()
-    output = torch.empty(num_bytes * 2, dtype=torch.float16, device="mps")
-    threads = (num_bytes + 3) // 4
-
-    lib.fp4x2_to_half_lut4_kernel(
-        input.contiguous().view(-1), output,
-        num_bytes,
-        threads=(threads,), group_size=(256,),
-    )
-
-    scale_val = scale.to(device="mps", dtype=torch.float16)
-    output = output * scale_val
-    return output
-
-
-def fp4_dequantize_arithmetic4(input, scale):
-    lib = _get_lib()
-
-    if input.device.type != "mps":
-        input = input.to("mps")
-
-    num_bytes = input.numel()
-    output = torch.empty(num_bytes * 2, dtype=torch.float16, device="mps")
-    threads = (num_bytes + 3) // 4
-
-    lib.fp4x2_to_half_arithmetic4_kernel(
-        input.contiguous().view(-1), output,
-        num_bytes,
-        threads=(threads,), group_size=(256,),
     )
 
     scale_val = scale.to(device="mps", dtype=torch.float16)

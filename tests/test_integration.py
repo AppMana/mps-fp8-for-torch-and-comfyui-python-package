@@ -50,6 +50,17 @@ class TestFp8DtypeOnMps:
         dst.copy_(src)
         assert torch.equal(dst.view(torch.uint8).cpu(), src.view(torch.uint8).cpu())
 
+    def test_fp8_embedding(self):
+        weight = torch.randn(32, 16)
+        indices = torch.tensor([[1, 5, 7], [2, 4, 9]], device="mps")
+        weight_fp8_cpu = weight.to(torch.float8_e4m3fn)
+        weight_fp8_mps = weight_fp8_cpu.to("mps")
+
+        expected = torch.nn.functional.embedding(indices.cpu(), weight_fp8_cpu).to(torch.float32)
+        actual = torch.nn.functional.embedding(indices, weight_fp8_mps).to(torch.float32).cpu()
+
+        assert torch.equal(actual, expected)
+
 
 @requires_mps
 @requires_fp8
