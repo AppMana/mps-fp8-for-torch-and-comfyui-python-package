@@ -1,9 +1,14 @@
 import importlib.resources
+import os
 
 import torch
 
 _lib = None
 _SHADER_SOURCE = None
+_DECODE_BACKENDS = {"lut", "arithmetic", "lut4", "arithmetic4", "auto"}
+_decode_backend = os.environ.get("FP4_FP8_MPS_DECODE_BACKEND", "lut").lower()
+if _decode_backend not in _DECODE_BACKENDS:
+    _decode_backend = "lut"
 
 
 def _load_shader_source():
@@ -21,6 +26,27 @@ def _get_lib():
         return _lib
     _lib = torch.mps.compile_shader(_load_shader_source())
     return _lib
+
+
+def set_decode_backend(backend: str) -> None:
+    """Select the FP8/FP4 decode backend: 'lut', 'arithmetic', or 'auto'."""
+    normalized = backend.lower()
+    if normalized not in _DECODE_BACKENDS:
+        raise ValueError(f"decode backend must be one of {sorted(_DECODE_BACKENDS)}, got {backend!r}")
+    global _decode_backend
+    _decode_backend = normalized
+
+
+def get_decode_backend() -> str:
+    return _decode_backend
+
+
+def _resolve_decode_backend(input) -> str:
+    if _decode_backend != "auto":
+        return _decode_backend
+    # Keep auto cheap and deterministic for hot dequantize calls. Unrolled
+    # variants are selectable, but do not consistently win on Apple Silicon.
+    return "lut"
 
 
 def fp8_scaled_mm(A, B, scale_a, scale_b):
@@ -63,6 +89,16 @@ def fp8_scaled_mm(A, B, scale_a, scale_b):
 
 
 def fp8_dequantize(input, scale):
+    if _resolve_decode_backend(input) == "lut4":
+        return fp8_dequantize_lut4(input, scale)
+    if _resolve_decode_backend(input) == "arithmetic":
+        return fp8_dequantize_arithmetic(input, scale)
+    if _resolve_decode_backend(input) == "arithmetic4":
+        return fp8_dequantize_arithmetic4(input, scale)
+    return fp8_dequantize_lut(input, scale)
+
+
+def fp8_dequantize_lut(input, scale):
     lib = _get_lib()
 
     if input.device.type != "mps":
@@ -75,6 +111,68 @@ def fp8_dequantize(input, scale):
         input.contiguous().view(-1), output.view(-1),
         count,
         threads=(count,), group_size=(256,),
+    )
+
+    scale_val = scale.to(device="mps", dtype=torch.float16)
+    output = output * scale_val
+    return output
+
+
+def fp8_dequantize_arithmetic(input, scale):
+    lib = _get_lib()
+
+    if input.device.type != "mps":
+        input = input.to("mps")
+
+    count = input.numel()
+    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
+
+    lib.fp8_to_half_arithmetic_kernel(
+        input.contiguous().view(-1), output.view(-1),
+        count,
+        threads=(count,), group_size=(256,),
+    )
+
+    scale_val = scale.to(device="mps", dtype=torch.float16)
+    output = output * scale_val
+    return output
+
+
+def fp8_dequantize_lut4(input, scale):
+    lib = _get_lib()
+
+    if input.device.type != "mps":
+        input = input.to("mps")
+
+    count = input.numel()
+    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
+    threads = (count + 3) // 4
+
+    lib.fp8_to_half_lut4_kernel(
+        input.contiguous().view(-1), output.view(-1),
+        count,
+        threads=(threads,), group_size=(256,),
+    )
+
+    scale_val = scale.to(device="mps", dtype=torch.float16)
+    output = output * scale_val
+    return output
+
+
+def fp8_dequantize_arithmetic4(input, scale):
+    lib = _get_lib()
+
+    if input.device.type != "mps":
+        input = input.to("mps")
+
+    count = input.numel()
+    output = torch.empty(input.shape, dtype=torch.float16, device="mps")
+    threads = (count + 3) // 4
+
+    lib.fp8_to_half_arithmetic4_kernel(
+        input.contiguous().view(-1), output.view(-1),
+        count,
+        threads=(threads,), group_size=(256,),
     )
 
     scale_val = scale.to(device="mps", dtype=torch.float16)
@@ -160,6 +258,16 @@ def fp8_scaled_mm_fast(A, B, scale_a, scale_b):
 
 
 def fp4_dequantize(input, scale):
+    if _resolve_decode_backend(input) == "lut4":
+        return fp4_dequantize_lut4(input, scale)
+    if _resolve_decode_backend(input) == "arithmetic":
+        return fp4_dequantize_arithmetic(input, scale)
+    if _resolve_decode_backend(input) == "arithmetic4":
+        return fp4_dequantize_arithmetic4(input, scale)
+    return fp4_dequantize_lut(input, scale)
+
+
+def fp4_dequantize_lut(input, scale):
     lib = _get_lib()
 
     if input.device.type != "mps":
@@ -172,6 +280,68 @@ def fp4_dequantize(input, scale):
         input.contiguous().view(-1), output,
         num_bytes,
         threads=(num_bytes,), group_size=(256,),
+    )
+
+    scale_val = scale.to(device="mps", dtype=torch.float16)
+    output = output * scale_val
+    return output
+
+
+def fp4_dequantize_arithmetic(input, scale):
+    lib = _get_lib()
+
+    if input.device.type != "mps":
+        input = input.to("mps")
+
+    num_bytes = input.numel()
+    output = torch.empty(num_bytes * 2, dtype=torch.float16, device="mps")
+
+    lib.fp4x2_to_half_arithmetic_kernel(
+        input.contiguous().view(-1), output,
+        num_bytes,
+        threads=(num_bytes,), group_size=(256,),
+    )
+
+    scale_val = scale.to(device="mps", dtype=torch.float16)
+    output = output * scale_val
+    return output
+
+
+def fp4_dequantize_lut4(input, scale):
+    lib = _get_lib()
+
+    if input.device.type != "mps":
+        input = input.to("mps")
+
+    num_bytes = input.numel()
+    output = torch.empty(num_bytes * 2, dtype=torch.float16, device="mps")
+    threads = (num_bytes + 3) // 4
+
+    lib.fp4x2_to_half_lut4_kernel(
+        input.contiguous().view(-1), output,
+        num_bytes,
+        threads=(threads,), group_size=(256,),
+    )
+
+    scale_val = scale.to(device="mps", dtype=torch.float16)
+    output = output * scale_val
+    return output
+
+
+def fp4_dequantize_arithmetic4(input, scale):
+    lib = _get_lib()
+
+    if input.device.type != "mps":
+        input = input.to("mps")
+
+    num_bytes = input.numel()
+    output = torch.empty(num_bytes * 2, dtype=torch.float16, device="mps")
+    threads = (num_bytes + 3) // 4
+
+    lib.fp4x2_to_half_arithmetic4_kernel(
+        input.contiguous().view(-1), output,
+        num_bytes,
+        threads=(threads,), group_size=(256,),
     )
 
     scale_val = scale.to(device="mps", dtype=torch.float16)

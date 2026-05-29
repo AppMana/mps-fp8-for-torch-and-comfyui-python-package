@@ -64,7 +64,7 @@ wheels = [
 
 [[package]]
 name = "fp4-fp8-for-torch-mps"
-version = "1.0.0"
+version = "1.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "torch" },

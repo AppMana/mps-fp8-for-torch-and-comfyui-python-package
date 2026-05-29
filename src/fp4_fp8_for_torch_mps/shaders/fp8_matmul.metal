@@ -84,6 +84,39 @@ constant half fp4_e2m1fn_lut_half[16] = {
     -0.0h, -0.5h, -1.0h, -1.5h, -2.0h, -3.0h, -4.0h, -6.0h,
 };
 
+inline half fp8_e4m3fn_to_half_arithmetic(uint8_t bits) {
+    uint payload = bits & 0x7F;
+    if (payload == 0x7F) return half(NAN);
+
+    float sign = (bits & 0x80) ? -1.0f : 1.0f;
+    uint exp_bits = (bits >> 3) & 0x0F;
+    uint mant_bits = bits & 0x07;
+
+    float value;
+    if (exp_bits == 0) {
+        value = (float(mant_bits) / 8.0f) * exp2(-6.0f);
+    } else {
+        value = (1.0f + float(mant_bits) / 8.0f) * exp2(float(exp_bits) - 7.0f);
+    }
+
+    return half(sign * value);
+}
+
+inline half fp4_e2m1fn_to_half_arithmetic(uint8_t nibble) {
+    uint sign = nibble & 0x08;
+    uint exp_bits = (nibble >> 1) & 0x03;
+    uint mant_bits = nibble & 0x01;
+
+    float value;
+    if (exp_bits == 0) {
+        value = float(mant_bits) * 0.5f;
+    } else {
+        value = (1.0f + float(mant_bits) * 0.5f) * exp2(float(exp_bits) - 1.0f);
+    }
+
+    return half(sign ? -value : value);
+}
+
 // Float -> FP4 e2m1fn encode (nearest value from the 16-entry set)
 inline uint8_t float_to_fp4_e2m1fn(float val) {
     uint sign = 0;
@@ -236,6 +269,68 @@ kernel void fp8_to_half_kernel(
     output[gid] = fp8_e4m3fn_lut_half[input[gid]];
 }
 
+// FP8 -> half dequantize (raw arithmetic decode, no LUT)
+kernel void fp8_to_half_arithmetic_kernel(
+    device const uint8_t* input [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    output[gid] = fp8_e4m3fn_to_half_arithmetic(input[gid]);
+}
+
+kernel void fp8_to_half_lut4_kernel(
+    device const uint8_t* input [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    uint base = gid * 4;
+    if (base >= count) return;
+
+    uint4 packed = uint4(0);
+    uint remaining = count - base;
+    if (remaining >= 4) {
+        packed.x = input[base];
+        packed.y = input[base + 1];
+        packed.z = input[base + 2];
+        packed.w = input[base + 3];
+        output[base] = fp8_e4m3fn_lut_half[packed.x];
+        output[base + 1] = fp8_e4m3fn_lut_half[packed.y];
+        output[base + 2] = fp8_e4m3fn_lut_half[packed.z];
+        output[base + 3] = fp8_e4m3fn_lut_half[packed.w];
+        return;
+    }
+
+    for (uint i = 0; i < remaining; i++) {
+        output[base + i] = fp8_e4m3fn_lut_half[input[base + i]];
+    }
+}
+
+kernel void fp8_to_half_arithmetic4_kernel(
+    device const uint8_t* input [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    uint base = gid * 4;
+    if (base >= count) return;
+
+    uint remaining = count - base;
+    if (remaining >= 4) {
+        output[base] = fp8_e4m3fn_to_half_arithmetic(input[base]);
+        output[base + 1] = fp8_e4m3fn_to_half_arithmetic(input[base + 1]);
+        output[base + 2] = fp8_e4m3fn_to_half_arithmetic(input[base + 2]);
+        output[base + 3] = fp8_e4m3fn_to_half_arithmetic(input[base + 3]);
+        return;
+    }
+
+    for (uint i = 0; i < remaining; i++) {
+        output[base + i] = fp8_e4m3fn_to_half_arithmetic(input[base + i]);
+    }
+}
+
 // float -> FP8 encode
 kernel void float_to_fp8_kernel(
     device const float* input [[buffer(0)]],
@@ -258,6 +353,87 @@ kernel void fp4x2_to_half_kernel(
     uint8_t byte = input[gid];
     output[gid * 2]     = fp4_e2m1fn_lut_half[byte & 0xF];
     output[gid * 2 + 1] = fp4_e2m1fn_lut_half[(byte >> 4) & 0xF];
+}
+
+// FP4 x2 -> half dequantize (raw arithmetic decode, no LUT)
+kernel void fp4x2_to_half_arithmetic_kernel(
+    device const uint8_t* input [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= count) return;
+    uint8_t byte = input[gid];
+    output[gid * 2]     = fp4_e2m1fn_to_half_arithmetic(byte & 0xF);
+    output[gid * 2 + 1] = fp4_e2m1fn_to_half_arithmetic((byte >> 4) & 0xF);
+}
+
+kernel void fp4x2_to_half_lut4_kernel(
+    device const uint8_t* input [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    uint base = gid * 4;
+    if (base >= count) return;
+
+    uint remaining = count - base;
+    if (remaining >= 4) {
+        uint8_t b0 = input[base];
+        uint8_t b1 = input[base + 1];
+        uint8_t b2 = input[base + 2];
+        uint8_t b3 = input[base + 3];
+
+        output[base * 2] = fp4_e2m1fn_lut_half[b0 & 0xF];
+        output[base * 2 + 1] = fp4_e2m1fn_lut_half[(b0 >> 4) & 0xF];
+        output[base * 2 + 2] = fp4_e2m1fn_lut_half[b1 & 0xF];
+        output[base * 2 + 3] = fp4_e2m1fn_lut_half[(b1 >> 4) & 0xF];
+        output[base * 2 + 4] = fp4_e2m1fn_lut_half[b2 & 0xF];
+        output[base * 2 + 5] = fp4_e2m1fn_lut_half[(b2 >> 4) & 0xF];
+        output[base * 2 + 6] = fp4_e2m1fn_lut_half[b3 & 0xF];
+        output[base * 2 + 7] = fp4_e2m1fn_lut_half[(b3 >> 4) & 0xF];
+        return;
+    }
+
+    for (uint i = 0; i < remaining; i++) {
+        uint8_t byte = input[base + i];
+        output[(base + i) * 2] = fp4_e2m1fn_lut_half[byte & 0xF];
+        output[(base + i) * 2 + 1] = fp4_e2m1fn_lut_half[(byte >> 4) & 0xF];
+    }
+}
+
+kernel void fp4x2_to_half_arithmetic4_kernel(
+    device const uint8_t* input [[buffer(0)]],
+    device half* output [[buffer(1)]],
+    constant uint& count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    uint base = gid * 4;
+    if (base >= count) return;
+
+    uint remaining = count - base;
+    if (remaining >= 4) {
+        uint8_t b0 = input[base];
+        uint8_t b1 = input[base + 1];
+        uint8_t b2 = input[base + 2];
+        uint8_t b3 = input[base + 3];
+
+        output[base * 2] = fp4_e2m1fn_to_half_arithmetic(b0 & 0xF);
+        output[base * 2 + 1] = fp4_e2m1fn_to_half_arithmetic((b0 >> 4) & 0xF);
+        output[base * 2 + 2] = fp4_e2m1fn_to_half_arithmetic(b1 & 0xF);
+        output[base * 2 + 3] = fp4_e2m1fn_to_half_arithmetic((b1 >> 4) & 0xF);
+        output[base * 2 + 4] = fp4_e2m1fn_to_half_arithmetic(b2 & 0xF);
+        output[base * 2 + 5] = fp4_e2m1fn_to_half_arithmetic((b2 >> 4) & 0xF);
+        output[base * 2 + 6] = fp4_e2m1fn_to_half_arithmetic(b3 & 0xF);
+        output[base * 2 + 7] = fp4_e2m1fn_to_half_arithmetic((b3 >> 4) & 0xF);
+        return;
+    }
+
+    for (uint i = 0; i < remaining; i++) {
+        uint8_t byte = input[base + i];
+        output[(base + i) * 2] = fp4_e2m1fn_to_half_arithmetic(byte & 0xF);
+        output[(base + i) * 2 + 1] = fp4_e2m1fn_to_half_arithmetic((byte >> 4) & 0xF);
+    }
 }
 
 // float -> FP4 x2 encode (pack 2 nibbles per byte)
