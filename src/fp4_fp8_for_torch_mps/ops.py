@@ -35,11 +35,11 @@ def _is_sub_byte(dtype):
 
 
 def _metal_scaled_mm(self, mat2, scale_a, scale_b, bias=None, scale_result=None, out_dtype=None, use_fast_accum=False):
-    from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_scaled_mm_auto
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_scaled_mm
 
     a = self.view(torch.uint8) if self.dtype != torch.uint8 else self
     b = mat2.view(torch.uint8) if mat2.dtype != torch.uint8 else mat2
-    result = fp8_scaled_mm_auto(a, b.t().contiguous(), scale_a, scale_b)
+    result = fp8_scaled_mm(a.contiguous(), b.t().contiguous(), scale_a, scale_b)
 
     if bias is not None:
         result = result + bias
@@ -51,6 +51,95 @@ def _metal_scaled_mm(self, mat2, scale_a, scale_b, bias=None, scale_result=None,
 
 
 _aten_lib.impl("_scaled_mm", _metal_scaled_mm, "MPS")
+
+
+def _scale_one(device):
+    return torch.tensor(1.0, device=device)
+
+
+def _fp8_mps_mm(self, mat2):
+    return _metal_scaled_mm(self, mat2, _scale_one(self.device), _scale_one(mat2.device))
+
+
+def _dequantize_for_matmul(tensor, dtype):
+    if _is_fp8(tensor.dtype) and tensor.device.type == "mps":
+        return tensor.to(dtype=dtype)
+    return tensor
+
+
+def _matmul_compute_dtype(*tensors):
+    for tensor in tensors:
+        if tensor.device.type == "mps" and not _is_sub_byte(tensor.dtype):
+            return tensor.dtype
+    return torch.float16
+
+
+def _metal_mm(keyset, self, mat2):
+    if self.device.type == "mps" and mat2.device.type == "mps" and (_is_fp8(self.dtype) or _is_fp8(mat2.dtype)):
+        if _is_fp8(self.dtype) and _is_fp8(mat2.dtype):
+            return _fp8_mps_mm(self, mat2)
+        dtype = _matmul_compute_dtype(self, mat2)
+        self = _dequantize_for_matmul(self, dtype)
+        mat2 = _dequantize_for_matmul(mat2, dtype)
+
+    ks = keyset.remove(torch._C.DispatchKey.MPS)
+    return torch.ops.aten.mm.default.redispatch(ks, self, mat2)
+
+
+_aten_lib.impl("mm", _metal_mm, "MPS", with_keyset=True, allow_override=True)
+
+
+def _metal_matmul(keyset, self, other):
+    if self.device.type == "mps" and other.device.type == "mps" and (_is_fp8(self.dtype) or _is_fp8(other.dtype)):
+        if self.ndim == 2 and other.ndim == 2 and _is_fp8(self.dtype) and _is_fp8(other.dtype):
+            return _fp8_mps_mm(self, other)
+        dtype = _matmul_compute_dtype(self, other)
+        self = _dequantize_for_matmul(self, dtype)
+        other = _dequantize_for_matmul(other, dtype)
+
+    ks = keyset.remove(torch._C.DispatchKey.MPS)
+    return torch.ops.aten.matmul.default.redispatch(ks, self, other)
+
+
+_aten_lib.impl("matmul", _metal_matmul, "MPS", with_keyset=True, allow_override=True)
+
+
+def _metal_addmm(keyset, self, mat1, mat2, *, beta=1, alpha=1):
+    if mat1.device.type == "mps" and mat2.device.type == "mps" and (_is_fp8(mat1.dtype) or _is_fp8(mat2.dtype)):
+        if _is_fp8(mat1.dtype) and _is_fp8(mat2.dtype):
+            mm = _fp8_mps_mm(mat1, mat2)
+            if alpha != 1:
+                mm = mm * alpha
+            if beta == 0:
+                return mm
+            return self * beta + mm
+
+        dtype = _matmul_compute_dtype(self, mat1, mat2)
+        mat1 = _dequantize_for_matmul(mat1, dtype)
+        mat2 = _dequantize_for_matmul(mat2, dtype)
+
+    ks = keyset.remove(torch._C.DispatchKey.MPS)
+    return torch.ops.aten.addmm.default.redispatch(ks, self, mat1, mat2, beta=beta, alpha=alpha)
+
+
+_aten_lib.impl("addmm", _metal_addmm, "MPS", with_keyset=True, allow_override=True)
+
+
+def _metal_linear(keyset, input, weight, bias=None):
+    if input.device.type == "mps" and weight.device.type == "mps" and (_is_fp8(input.dtype) or _is_fp8(weight.dtype)):
+        if input.ndim == 2 and _is_fp8(input.dtype) and _is_fp8(weight.dtype):
+            out = _fp8_mps_mm(input, weight.t().contiguous())
+            return out if bias is None else out + bias
+
+        dtype = _matmul_compute_dtype(input, weight)
+        input = _dequantize_for_matmul(input, dtype)
+        weight = _dequantize_for_matmul(weight, dtype)
+
+    ks = keyset.remove(torch._C.DispatchKey.MPS)
+    return torch.ops.aten.linear.default.redispatch(ks, input, weight, bias)
+
+
+_aten_lib.impl("linear", _metal_linear, "MPS", with_keyset=True, allow_override=True)
 
 
 def _metal_to_copy(keyset, self, *, dtype=None, layout=None, device=None, pin_memory=None, non_blocking=False, memory_format=None):
@@ -144,9 +233,12 @@ def _metal_copy_(keyset, self, src, non_blocking=False):
 
     # Sub-byte -> sub-byte on MPS (raw bytes)
     if source_sub and dest_sub and dest_is_mps:
+        src_bytes = src.view(torch.uint8)
+        if not src_bytes.is_contiguous():
+            src_bytes = src_bytes.contiguous()
         ks = keyset.remove(torch._C.DispatchKey.MPS)
         torch.ops.aten.copy_.default.redispatch(
-            ks, self.view(torch.uint8), src.contiguous().view(torch.uint8), non_blocking,
+            ks, self.view(torch.uint8), src_bytes, non_blocking,
         )
         return self
 

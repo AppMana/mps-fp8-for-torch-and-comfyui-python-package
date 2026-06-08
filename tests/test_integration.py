@@ -8,6 +8,7 @@ favorably to FP16.
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 requires_mps = pytest.mark.skipif(
     not torch.backends.mps.is_available(),
@@ -17,6 +18,22 @@ requires_fp8 = pytest.mark.skipif(
     not hasattr(torch, "float8_e4m3fn"),
     reason="FP8 dtypes not available",
 )
+
+
+def _quantize_row_scaled_fp8_uint8(weight):
+    target_amax = 400.0
+    fp32_weight = weight.float()
+    amax = fp32_weight.abs().amax(dim=1).clamp(min=torch.finfo(torch.float32).tiny)
+    scale = (target_amax / amax).to(device=weight.device, dtype=torch.float32)
+    inv_scale = (amax / target_amax).to(device=weight.device, dtype=torch.float32)
+    scaled = (fp32_weight * scale[:, None]).clamp(min=-target_amax, max=target_amax)
+    quantized = scaled.to(torch.float8_e4m3fn).view(torch.uint8)
+    return quantized.contiguous(), inv_scale
+
+
+def _dequantize_row_scaled_fp8_uint8(quantized, inv_scale, dtype):
+    dequantized = quantized.view(torch.float8_e4m3fn).to(dtype)
+    return dequantized * inv_scale[:, None].to(device=quantized.device, dtype=dtype)
 
 
 @requires_mps
@@ -147,6 +164,118 @@ class TestScaledMmOnMps:
 
         rel_rmse = torch.sqrt(((fp8_result - ref) ** 2).mean()) / torch.sqrt((ref ** 2).mean())
         assert rel_rmse < 0.15, f"FP8 scaled matmul rel RMSE {rel_rmse:.2%} >= 15%"
+
+
+@requires_mps
+@requires_fp8
+class TestFp8MatmulOpsOnMps:
+    """Standard torch matrix ops should not leak unsupported raw FP8 MPS matmul."""
+
+    def test_torch_matmul_fp8_fp8_uses_scaled_mm(self):
+        a = torch.randn((32, 64), device="mps").to(torch.float8_e4m3fn)
+        b = torch.randn((64, 48), device="mps").to(torch.float8_e4m3fn)
+
+        out = torch.matmul(a, b)
+
+        assert out.shape == (32, 48)
+        assert out.device.type == "mps"
+        assert out.dtype == torch.float32
+
+    def test_torch_matmul_fp8_fp8_large_avoids_recursive_fast_path(self):
+        a = torch.randn((64, 128), device="mps").to(torch.float8_e4m3fn)
+        b = torch.randn((128, 96), device="mps").to(torch.float8_e4m3fn)
+
+        out = torch.matmul(a, b)
+
+        assert out.shape == (64, 96)
+        assert out.device.type == "mps"
+        assert out.dtype == torch.float32
+
+    def test_at_operator_fp8_fp8_uses_scaled_mm(self):
+        a = torch.randn((32, 64), device="mps").to(torch.float8_e4m3fn)
+        b = torch.randn((64, 48), device="mps").to(torch.float8_e4m3fn)
+
+        out = a @ b
+
+        assert out.shape == (32, 48)
+        assert out.device.type == "mps"
+        assert out.dtype == torch.float32
+
+    def test_transposed_fp8_contiguous_avoids_copy_recursion(self):
+        weight = torch.randn((256, 256), device="mps").to(torch.float8_e4m3fn)
+
+        out = weight.t().contiguous()
+
+        assert out.shape == (256, 256)
+        assert out.device.type == "mps"
+        assert out.dtype == torch.float8_e4m3fn
+        assert out.is_contiguous()
+
+    def test_addmm_fp8_fp8_uses_scaled_mm(self):
+        bias = torch.randn((32, 48), device="mps")
+        a = torch.randn((32, 64), device="mps").to(torch.float8_e4m3fn)
+        b = torch.randn((64, 48), device="mps").to(torch.float8_e4m3fn)
+
+        out = torch.addmm(bias, a, b)
+
+        assert out.shape == (32, 48)
+        assert out.device.type == "mps"
+        assert out.dtype == torch.float32
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_linear_float_input_fp8_weight_dequantizes_weight(self, dtype):
+        x = torch.randn((4, 8, 64), device="mps", dtype=dtype)
+        weight = torch.randn((48, 64), device="mps").to(torch.float8_e4m3fn)
+        bias = torch.randn((48,), device="mps", dtype=dtype)
+
+        out = F.linear(x, weight, bias)
+
+        assert out.shape == (4, 8, 48)
+        assert out.device.type == "mps"
+        assert out.dtype == dtype
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("shape", [(16, 64), (4, 8, 64)])
+    @pytest.mark.parametrize("has_bias", [False, True])
+    def test_linear_fp8_weight_matches_explicit_dequantize_and_keeps_storage(self, dtype, shape, has_bias):
+        x = torch.randn(shape, device="mps", dtype=dtype)
+        weight = torch.randn((48, 64), device="mps").to(torch.float8_e4m3fn)
+        original_weight_bytes = weight.view(torch.uint8).clone()
+        bias = torch.randn((48,), device="mps", dtype=dtype) if has_bias else None
+
+        out = F.linear(x, weight, bias)
+        expected = F.linear(x, weight.to(dtype), bias)
+
+        assert out.shape == (*shape[:-1], 48)
+        assert out.device.type == "mps"
+        assert out.dtype == dtype
+        assert weight.dtype == torch.float8_e4m3fn
+        assert torch.equal(weight.view(torch.uint8), original_weight_bytes)
+        assert torch.allclose(out, expected, atol=0, rtol=0)
+
+
+@requires_mps
+@requires_fp8
+class TestRowScaledUint8LinearOnMps:
+    """Test-only row-scaled uint8 FP8 storage for comparison benchmarks."""
+
+    def test_row_scaled_uint8_weight_dequantizes_for_linear(self):
+        x = torch.randn((16, 64), device="mps", dtype=torch.float16)
+        weight = torch.randn((48, 64), device="mps", dtype=torch.float16)
+        bias = torch.randn((48,), device="mps", dtype=torch.float16)
+
+        quantized, inv_scale = _quantize_row_scaled_fp8_uint8(weight)
+        dequantized = _dequantize_row_scaled_fp8_uint8(quantized, inv_scale, x.dtype)
+        out = F.linear(x, dequantized, bias)
+        ref = F.linear(x, weight, bias)
+
+        assert quantized.dtype == torch.uint8
+        assert quantized.device.type == "mps"
+        assert quantized.shape == weight.shape
+        assert inv_scale.shape == (weight.shape[0],)
+        assert out.shape == (16, 48)
+        rel_rmse = torch.sqrt(((out.float() - ref.float()) ** 2).mean()) / torch.sqrt((ref.float() ** 2).mean())
+        assert rel_rmse < 0.15
 
 
 @requires_mps

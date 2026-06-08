@@ -7,6 +7,21 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
+[manifest]
+
+[[manifest.dependency-metadata]]
+name = "sageattention"
+version = "2.2.0"
+requires-dist = ["torch"]
+
+[[manifest.dependency-metadata]]
+name = "tensorrt-cu12"
+version = "10.12.0.36"
+
+[[manifest.dependency-metadata]]
+name = "tensorrt-cu12-libs"
+version = "10.12.0.36"
+
 [[package]]
 name = "colorama"
 version = "0.4.6"
@@ -46,7 +61,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -64,7 +79,7 @@ wheels = [
 
 [[package]]
 name = "fp4-fp8-for-torch-mps"
-version = "1.0.1"
+version = "1.0.3"
 source = { editable = "." }
 dependencies = [
     { name = "torch" },

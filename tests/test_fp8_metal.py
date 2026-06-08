@@ -24,6 +24,8 @@ def _fp8_e4m3fn_decode_reference(bits: int) -> float:
     return -value if sign else value
 
 
+@requires_mps
+@requires_fp8
 class TestExhaustiveFp8Decode:
     """Test all 256 FP8 bit patterns against reference."""
 
@@ -46,6 +48,8 @@ class TestExhaustiveFp8Decode:
         assert max_abs_err < 0.5, f"Max absolute decode error {max_abs_err} >= 0.5"
 
 
+@requires_mps
+@requires_fp8
 class TestMatmulAccuracyNative:
     """Test FP8 scaled matmul via native Metal shaders."""
 
@@ -92,6 +96,8 @@ class TestMatmulAccuracyNative:
         assert result.shape == (M, N)
 
 
+@requires_mps
+@requires_fp8
 class TestQuantizeRoundtrip:
     """Test quantize then dequantize roundtrip."""
 
@@ -106,6 +112,8 @@ class TestQuantizeRoundtrip:
         assert max_err < 50.0, f"Roundtrip max error {max_err} >= 50.0"
 
 
+@requires_mps
+@requires_fp8
 class TestVecmat:
     """Test M=1 vecmat kernel path."""
 

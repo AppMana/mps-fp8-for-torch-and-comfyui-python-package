@@ -2,8 +2,25 @@
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from conftest import requires_mps
+
+
+def _quantize_row_scaled_fp8_uint8(weight):
+    target_amax = 400.0
+    fp32_weight = weight.float()
+    amax = fp32_weight.abs().amax(dim=1).clamp(min=torch.finfo(torch.float32).tiny)
+    scale = (target_amax / amax).to(device=weight.device, dtype=torch.float32)
+    inv_scale = (amax / target_amax).to(device=weight.device, dtype=torch.float32)
+    scaled = (fp32_weight * scale[:, None]).clamp(min=-target_amax, max=target_amax)
+    quantized = scaled.to(torch.float8_e4m3fn).view(torch.uint8)
+    return quantized.contiguous(), inv_scale
+
+
+def _dequantize_row_scaled_fp8_uint8(quantized, inv_scale, dtype):
+    dequantized = quantized.view(torch.float8_e4m3fn).to(dtype)
+    return dequantized * inv_scale[:, None].to(device=quantized.device, dtype=dtype)
 
 
 @requires_mps
@@ -85,6 +102,53 @@ class TestBenchMatmul:
             result = A @ B.T
             torch.mps.synchronize()
             return result
+        benchmark(run)
+
+
+@requires_mps
+class TestBenchLinearStorageFormats:
+    """Compare resident FP8 storage against row-scaled uint8 storage."""
+
+    @pytest.mark.parametrize(
+        ("m", "k", "n"),
+        [
+            (256, 256, 256),
+            (1024, 1024, 1024),
+            (256, 4096, 4096),
+        ],
+        ids=["256x256x256", "1024x1024x1024", "256x4096x4096"],
+    )
+    @pytest.mark.parametrize(
+        "storage",
+        ["native_fp16", "fp8_storage", "row_scaled_uint8"],
+    )
+    @pytest.mark.benchmark(group="linear_weight_storage")
+    def test_linear_weight_storage(self, benchmark, m, k, n, storage):
+        x = torch.randn((m, k), dtype=torch.float16, device="mps")
+        weight = torch.randn((n, k), dtype=torch.float16, device="mps")
+        bias = torch.randn((n,), dtype=torch.float16, device="mps")
+
+        if storage == "native_fp16":
+            def run():
+                result = F.linear(x, weight, bias)
+                torch.mps.synchronize()
+                return result
+        elif storage == "fp8_storage":
+            fp8_weight = weight.to(torch.float8_e4m3fn)
+
+            def run():
+                result = F.linear(x, fp8_weight, bias)
+                torch.mps.synchronize()
+                return result
+        else:
+            quantized, inv_scale = _quantize_row_scaled_fp8_uint8(weight)
+
+            def run():
+                dequantized = _dequantize_row_scaled_fp8_uint8(quantized, inv_scale, x.dtype)
+                result = F.linear(x, dequantized, bias)
+                torch.mps.synchronize()
+                return result
+
         benchmark(run)
 
 
