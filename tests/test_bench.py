@@ -105,10 +105,14 @@ class TestBenchAttentionBlock:
 
         x_q, x_s = torch.ops.fp8_mps.quantize(x.float())
 
+        fp8 = torch.float8_e4m3fn
+        x_q = x_q.view(fp8)
+        Wq_q, Wk_q, Wv_q = (w.t().contiguous().view(fp8) for w in (Wq_q, Wk_q, Wv_q))
+
         def run():
-            q = torch._scaled_mm(x_q, Wq_q.t().contiguous(), x_s, Wq_s).half()
-            k = torch._scaled_mm(x_q, Wk_q.t().contiguous(), x_s, Wk_s).half()
-            v = torch._scaled_mm(x_q, Wv_q.t().contiguous(), x_s, Wv_s).half()
+            q = torch._scaled_mm(x_q, Wq_q, x_s, Wq_s).half()
+            k = torch._scaled_mm(x_q, Wk_q, x_s, Wk_s).half()
+            v = torch._scaled_mm(x_q, Wv_q, x_s, Wv_s).half()
             q = q.view(B, S, H, head_dim).transpose(1, 2)
             k = k.view(B, S, H, head_dim).transpose(1, 2)
             v = v.view(B, S, H, head_dim).transpose(1, 2)
