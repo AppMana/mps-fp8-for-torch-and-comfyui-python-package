@@ -174,7 +174,8 @@ inline uint8_t float_to_fp8_e5m2(float val) {
     uint sign = raw >> 31;
     val = abs(val);
     if (isnan(val)) return (sign << 7) | 0x7F;
-    if (isinf(val) || val >= 57344.0f) return (sign << 7) | 0x7C;
+    // 57344 is the largest finite e5m2 value; 61440 rounds to infinity.
+    if (isinf(val) || val >= 61440.0f) return (sign << 7) | 0x7C;
     if (val == 0.0f) return sign << 7;
 
     if (val < 0x1.0p-14f) {
@@ -296,7 +297,7 @@ inline uint8_t float_to_fp8_e4m3fn(float val) {
     val = abs(val);
 
     if (isnan(val)) return 0x7F;
-    if (val > 448.0f || isinf(val)) return (sign << 7) | 0x7F;
+    if (val > 448.0f || isinf(val)) return (sign << 7) | 0x7E;
     if (val < (1.0f / 512.0f)) return sign << 7;
 
     // Extract exponent and mantissa from IEEE 754 float32 bits
@@ -404,6 +405,83 @@ kernel void fp8_scaled_vecmat_kernel(
         sum += fp8_e4m3fn_lut[x[k]] * fp8_e4m3fn_lut[W[row_offset + k]];
     }
 
+    sum = simd_sum(sum);
+
+    if (simd_lane == 0) {
+        float sx = scale_x[0];
+        float sw = (scale_mode == 0) ? scale_w[0] : scale_w[row];
+        output[row] = sum * sx * sw;
+    }
+}
+
+// The raw-byte kernels above are the original e4m3fn path. Typed FP8 inputs
+// need their own decoder; the same byte has a different value in each format.
+inline float fp8_matmul_decode(uint8_t bits, uint format) {
+    switch (format) {
+        case 0: return fp8_e4m3fn_lut[bits];
+        // e5m2 and IEEE half have the same exponent and sign layout. The two
+        // mantissa bits occupy the high two bits of half's ten-bit mantissa.
+        case 1: return float(as_type<half>(ushort(uint(bits) << 8)));
+        case 2: return fp8_e4m3fnuz_to_float_arithmetic(bits);
+        case 3: return fp8_e5m2fnuz_to_float_arithmetic(bits);
+        default: return fp8_e8m0fnu_to_float_arithmetic(bits);
+    }
+}
+
+kernel void fp8_scaled_matmul_dtype_kernel(
+    device const uint8_t* A [[buffer(0)]],
+    device const uint8_t* B [[buffer(1)]],
+    device float* C [[buffer(2)]],
+    device const float* scale_a [[buffer(3)]],
+    device const float* scale_b [[buffer(4)]],
+    constant uint& M [[buffer(5)]],
+    constant uint& N [[buffer(6)]],
+    constant uint& K [[buffer(7)]],
+    constant uint& scale_mode [[buffer(8)]],
+    constant uint& format_a [[buffer(9)]],
+    constant uint& format_b [[buffer(10)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    uint row = gid.y;
+    uint col = gid.x;
+    if (row >= M || col >= N) return;
+
+    float sum = 0.0f;
+    uint a_base = row * K;
+    uint b_base = col * K;
+    for (uint k = 0; k < K; k++) {
+        sum += fp8_matmul_decode(A[a_base + k], format_a)
+             * fp8_matmul_decode(B[b_base + k], format_b);
+    }
+
+    float sa = (scale_mode == 0) ? scale_a[0] : scale_a[row];
+    float sb = (scale_mode == 0) ? scale_b[0] : scale_b[col];
+    C[row * N + col] = sum * sa * sb;
+}
+
+kernel void fp8_scaled_vecmat_dtype_kernel(
+    device const uint8_t* x [[buffer(0)]],
+    device const uint8_t* W [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    device const float* scale_x [[buffer(3)]],
+    device const float* scale_w [[buffer(4)]],
+    constant uint& N [[buffer(5)]],
+    constant uint& K [[buffer(6)]],
+    constant uint& scale_mode [[buffer(7)]],
+    constant uint& format_x [[buffer(8)]],
+    constant uint& format_w [[buffer(9)]],
+    uint gid [[thread_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]]
+) {
+    uint row = gid / 32;
+    if (row >= N) return;
+
+    float sum = 0.0f;
+    uint row_offset = row * K;
+    for (uint k = simd_lane; k < K; k += 32) {
+        sum += fp8_matmul_decode(x[k], format_x)
+             * fp8_matmul_decode(W[row_offset + k], format_w);
+    }
     sum = simd_sum(sum);
 
     if (simd_lane == 0) {
