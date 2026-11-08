@@ -35,11 +35,13 @@ def _is_sub_byte(dtype):
 
 
 def _metal_scaled_mm(self, mat2, scale_a, scale_b, bias=None, scale_result=None, out_dtype=None, use_fast_accum=False):
-    from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_scaled_mm
+    from fp4_fp8_for_torch_mps.fp8_mps_native import fp8_scaled_mm, fp8_matmul_format
 
+    format_a = fp8_matmul_format(self.dtype)
+    format_b = fp8_matmul_format(mat2.dtype)
     a = self.view(torch.uint8) if self.dtype != torch.uint8 else self
     b = mat2.view(torch.uint8) if mat2.dtype != torch.uint8 else mat2
-    result = fp8_scaled_mm(a.contiguous(), b.t().contiguous(), scale_a, scale_b)
+    result = fp8_scaled_mm(a.contiguous(), b.t().contiguous(), scale_a, scale_b, format_a, format_b)
 
     if bias is not None:
         result = result + bias

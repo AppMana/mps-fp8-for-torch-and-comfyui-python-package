@@ -101,6 +101,33 @@ def test_fp8_arithmetic_encode_matches_cpu(dtype):
 
 
 @requires_mps
+def test_e4m3fn_out_of_range_encode_matches_cpu():
+    from fp4_fp8_for_torch_mps import fp8_mps_native
+
+    values = torch.tensor(
+        [-float("inf"), -100000.0, -500.0, -465.0, -464.0, -449.0, -448.0,
+         448.0, 449.0, 464.0, 465.0, 500.0, 100000.0, float("inf"), float("nan")],
+        dtype=torch.float32,
+    )
+    expected = values.to(torch.float8_e4m3fn).view(torch.uint8)
+    on_mps = values.to("mps")
+    encoded = fp8_mps_native.fp8_encode_arithmetic_dtype(on_mps, torch.float8_e4m3fn)
+    converted = on_mps.to(torch.float8_e4m3fn).view(torch.uint8)
+
+    assert torch.equal(encoded.cpu(), expected)
+    assert torch.equal(converted.cpu(), expected)
+
+
+@requires_mps
+def test_e4m3fn_encode_finite_half_values_matches_cpu():
+    values = torch.arange(65536, dtype=torch.int32).to(torch.uint16).view(torch.float16).float()
+    values = values[torch.isfinite(values)]
+    expected = values.to(torch.float8_e4m3fn).view(torch.uint8)
+    actual = values.to("mps").to(torch.float8_e4m3fn).view(torch.uint8).cpu()
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@requires_mps
 @pytest.mark.parametrize("dtype", _available_dtypes(FP8_DTYPES))
 def test_fp8_arithmetic_decode_matches_cpu(dtype):
     from fp4_fp8_for_torch_mps import fp8_mps_native

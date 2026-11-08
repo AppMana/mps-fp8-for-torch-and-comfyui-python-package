@@ -11,6 +11,14 @@ _FP8_E5M2 = getattr(torch, "float8_e5m2", None)
 _FP8_E4M3FNUZ = getattr(torch, "float8_e4m3fnuz", None)
 _FP8_E5M2FNUZ = getattr(torch, "float8_e5m2fnuz", None)
 _FP8_E8M0FNU = getattr(torch, "float8_e8m0fnu", None)
+_MATMUL_FORMATS = {
+    torch.uint8: 0,  # Raw-byte API has always meant e4m3fn.
+    _FP8_E4M3FN: 0,
+    _FP8_E5M2: 1,
+    _FP8_E4M3FNUZ: 2,
+    _FP8_E5M2FNUZ: 3,
+    _FP8_E8M0FNU: 4,
+}
 _DECODE_BACKENDS = {"lut", "arithmetic", "auto"}
 _decode_backend = os.environ.get("FP4_FP8_MPS_DECODE_BACKEND", "lut").lower()
 if _decode_backend not in _DECODE_BACKENDS:
@@ -22,7 +30,9 @@ def _load_shader_source():
     if _SHADER_SOURCE is not None:
         return _SHADER_SOURCE
     ref = importlib.resources.files("fp4_fp8_for_torch_mps.shaders").joinpath("fp8_matmul.metal")
-    _SHADER_SOURCE = ref.read_text(encoding="utf-8")
+    # PyTorch releases differ on whether e4m3fn overflow saturates or becomes NaN.
+    overflow = torch.tensor(float("inf")).to(torch.float8_e4m3fn).view(torch.uint8).item()
+    _SHADER_SOURCE = f"#define FP8_E4M3FN_SATURATE {int(overflow == 0x7E)}\n" + ref.read_text(encoding="utf-8")
     return _SHADER_SOURCE
 
 
@@ -72,7 +82,11 @@ def _resolve_decode_backend(input) -> str:
     return "lut"
 
 
-def fp8_scaled_mm(A, B, scale_a, scale_b):
+def fp8_matmul_format(dtype):
+    return _MATMUL_FORMATS[dtype]
+
+
+def fp8_scaled_mm(A, B, scale_a, scale_b, format_a=0, format_b=0):
     lib = _get_lib()
 
     assert A.dtype == torch.uint8 and B.dtype == torch.uint8
@@ -96,17 +110,31 @@ def fp8_scaled_mm(A, B, scale_a, scale_b):
 
     if M == 1:
         total_threads = N * 32
-        lib.fp8_scaled_vecmat_kernel(
-            A, B, C, scale_a, scale_b,
-            N, K, scale_mode,
-            threads=(total_threads,), group_size=(256,),
-        )
+        if format_a == 0 and format_b == 0 and K % 4 == 0:
+            lib.fp8_scaled_vecmat_kernel(
+                A, B, C, scale_a, scale_b,
+                N, K, scale_mode,
+                threads=(total_threads,), group_size=(256,),
+            )
+        else:
+            lib.fp8_scaled_vecmat_dtype_kernel(
+                A, B, C, scale_a, scale_b,
+                N, K, scale_mode, format_a, format_b,
+                threads=(total_threads,), group_size=(256,),
+            )
     else:
-        lib.fp8_scaled_matmul_kernel(
-            A, B, C, scale_a, scale_b,
-            M, N, K, scale_mode,
-            threads=(N, M), group_size=(16, 16),
-        )
+        if format_a == 0 and format_b == 0:
+            lib.fp8_scaled_matmul_kernel(
+                A, B, C, scale_a, scale_b,
+                M, N, K, scale_mode,
+                threads=(N, M), group_size=(16, 16),
+            )
+        else:
+            lib.fp8_scaled_matmul_dtype_kernel(
+                A, B, C, scale_a, scale_b,
+                M, N, K, scale_mode, format_a, format_b,
+                threads=(N, M), group_size=(16, 16),
+            )
 
     return C
 
