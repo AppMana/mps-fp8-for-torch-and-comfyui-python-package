@@ -25,8 +25,9 @@ def test_reported_example_all_matrix_ops(dtype):
 
 
 @requires_mps
-@pytest.mark.parametrize("shape", [(1, 3, 2), (2, 3, 4), (32, 64, 24)])
+@pytest.mark.parametrize("shape", [(1, 3, 2), (1, 17, 7), (2, 3, 4), (32, 64, 24)])
 @pytest.mark.parametrize("dtypes", [
+    (torch.float8_e4m3fn, torch.float8_e4m3fn),
     (torch.float8_e5m2, torch.float8_e5m2),
     (torch.float8_e5m2, torch.float8_e4m3fn),
     (torch.float8_e4m3fn, torch.float8_e5m2),
@@ -46,6 +47,11 @@ def test_e5m2_matmul_matches_dequantized_mps(shape, dtypes):
     scaled = torch._scaled_mm(a, b, scale_a, scale_b)
     torch.testing.assert_close(scaled, expected * 0.75, rtol=1e-4, atol=1e-4)
 
+    scale_a = torch.arange(1, m + 1, device="mps").float().reshape(m, 1) / 2
+    scale_b = torch.arange(1, n + 1, device="mps").float().reshape(1, n) / 4
+    scaled = torch._scaled_mm(a, b, scale_a, scale_b)
+    torch.testing.assert_close(scaled, expected * scale_a * scale_b, rtol=1e-4, atol=1e-4)
+
 
 @requires_mps
 def test_e5m2_special_range_preserves_float32_result():
@@ -64,12 +70,13 @@ def test_e5m2_max_finite_rounds_like_cpu():
 
 
 @requires_mps
-def test_e5m2_all_bit_patterns_decode_in_matmul():
+@pytest.mark.parametrize("dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+def test_fp8_all_bit_patterns_decode_in_matmul(dtype):
     raw = torch.arange(256, dtype=torch.uint8)
-    a = raw.to("mps").view(torch.float8_e5m2).reshape(256, 1)
-    one = torch.tensor([[1.0]], device="mps").to(torch.float8_e5m2)
+    a = raw.to("mps").view(dtype).reshape(256, 1)
+    one = torch.tensor([[1.0]], device="mps").to(dtype)
     actual = torch.mm(a, one).cpu().reshape(-1)
-    expected = raw.view(torch.float8_e5m2).float()
+    expected = raw.view(dtype).float()
     torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
 
 

@@ -30,7 +30,9 @@ def _load_shader_source():
     if _SHADER_SOURCE is not None:
         return _SHADER_SOURCE
     ref = importlib.resources.files("fp4_fp8_for_torch_mps.shaders").joinpath("fp8_matmul.metal")
-    _SHADER_SOURCE = ref.read_text(encoding="utf-8")
+    # PyTorch releases differ on whether e4m3fn overflow saturates or becomes NaN.
+    overflow = torch.tensor(float("inf")).to(torch.float8_e4m3fn).view(torch.uint8).item()
+    _SHADER_SOURCE = f"#define FP8_E4M3FN_SATURATE {int(overflow == 0x7E)}\n" + ref.read_text(encoding="utf-8")
     return _SHADER_SOURCE
 
 
@@ -108,7 +110,7 @@ def fp8_scaled_mm(A, B, scale_a, scale_b, format_a=0, format_b=0):
 
     if M == 1:
         total_threads = N * 32
-        if format_a == 0 and format_b == 0:
+        if format_a == 0 and format_b == 0 and K % 4 == 0:
             lib.fp8_scaled_vecmat_kernel(
                 A, B, C, scale_a, scale_b,
                 N, K, scale_mode,
@@ -524,9 +526,7 @@ def fp8_quantize(input):
     amax = inp.abs().max().item()
     scale = 448.0 / amax if amax > 0 else 1.0
 
-    # MPS float32 multiplication can round the maximum just above 448. The
-    # e4m3fn encoder treats that as NaN, so keep quantized inputs in range.
-    scaled = (inp * scale).clamp_(-448.0, 448.0).contiguous()
+    scaled = (inp * scale).contiguous()
     output = torch.empty(inp.shape, dtype=torch.uint8, device="mps")
 
     lib.float_to_fp8_kernel(

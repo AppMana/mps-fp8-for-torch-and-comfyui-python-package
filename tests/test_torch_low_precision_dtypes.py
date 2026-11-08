@@ -105,8 +105,8 @@ def test_e4m3fn_out_of_range_encode_matches_cpu():
     from fp4_fp8_for_torch_mps import fp8_mps_native
 
     values = torch.tensor(
-        [-float("inf"), -100000.0, -500.0, -449.0, -448.0,
-         448.0, 449.0, 500.0, 100000.0, float("inf"), float("nan")],
+        [-float("inf"), -100000.0, -500.0, -465.0, -464.0, -449.0, -448.0,
+         448.0, 449.0, 464.0, 465.0, 500.0, 100000.0, float("inf"), float("nan")],
         dtype=torch.float32,
     )
     expected = values.to(torch.float8_e4m3fn).view(torch.uint8)
