@@ -296,13 +296,13 @@ inline uint8_t float_to_fp8_e4m3fn(float val) {
     uint sign = raw >> 31;
     val = abs(val);
 
-    if (isnan(val)) return 0x7F;
+    if (isnan(val)) return (sign << 7) | 0x7F;
 #if FP8_E4M3FN_SATURATE
     if (val > 448.0f) return (sign << 7) | 0x7E;
 #else
     if (val > 464.0f) return (sign << 7) | 0x7F;
 #endif
-    if (val < (1.0f / 512.0f)) return sign << 7;
+    if (val == 0.0f) return sign << 7;
 
     // Extract exponent and mantissa from IEEE 754 float32 bits
     uint bits = as_type<uint>(val);
